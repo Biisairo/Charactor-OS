@@ -65,8 +65,13 @@ class Client:
     env: LLMEnv
     llm: openai.OpenAI
 
-    def __init__(self):
-        self.env = self._get_env()
+    def __init__(self, env: LLMEnv | None = None):
+        """
+        Args:
+            env: LLM 접속 설정. 생략하면 환경 변수에서 읽는다.
+                평가 판정자처럼 대화용과 다른 자격 증명·모델을 쓰는 경우에 주입한다.
+        """
+        self.env = env or self._get_env()
         self.llm = openai.OpenAI(api_key=self.env.api_key, base_url=self.env.base_url)
 
     # ---------------------------------------------------------------------------

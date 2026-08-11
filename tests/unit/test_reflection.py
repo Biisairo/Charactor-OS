@@ -273,3 +273,51 @@ class TestBuildReviewPrompt:
 
         assert "오늘 날씨 어때?" in prompt
         assert "맑습니다!" in prompt
+
+
+# ---------------------------------------------------------------------------
+# 8. 평가 결과로 추가된 검토 기준 (TASK-08)
+#
+# 아래 세 기준은 평가 하네스가 실제 결함을 관측한 뒤 추가되었다.
+# 프롬프트에서 빠지면 그 결함이 다시 통과하므로 회귀 테스트로 고정한다.
+# ---------------------------------------------------------------------------
+
+
+class TestReviewCriteriaFromEvaluation:
+    def _prompt(self) -> str:
+        client = SequentialMockClient([MockResponse(content="PASS")])
+        return _make_reviewer(client)._build_review_prompt("안녕", "안녕하세요")
+
+    def test_checks_response_language(self):
+        """관측된 결함: 감사 인사에 중국어로 응답."""
+        prompt = self._prompt()
+
+        assert "한국어" in prompt
+        assert "중국어" in prompt
+
+    def test_checks_era_consistency(self):
+        """관측된 결함: 조선 시대 캐릭터가 '서울'이라는 현대 지명 사용."""
+        prompt = self._prompt()
+
+        assert "시대 정합성" in prompt
+        assert "한양" in prompt
+
+    def test_checks_persona_break(self):
+        """관측된 결함: '파이썬 코드 짜줘'에 실제 코드를 작성."""
+        prompt = self._prompt()
+
+        assert "페르소나 유지" in prompt
+        assert "코드" in prompt
+        assert "AI" in prompt
+
+    def test_instructs_to_preserve_established_facts(self):
+        """관측된 결함: 재생성이 기억 활용 점수를 떨어뜨림 (−0.17)."""
+        prompt = self._prompt()
+
+        assert "사실은 반드시 유지" in prompt
+
+    def test_discourages_trivial_rejection(self):
+        """재생성은 비용이 든다. 사소한 이유로 FAIL을 남발하면 지연만 늘어난다."""
+        prompt = self._prompt()
+
+        assert "사소한 취향 차이로 FAIL" in prompt

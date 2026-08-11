@@ -1,0 +1,56 @@
+{
+  "generated_for": "README.md / ARCHITECTURE.md 의 Reflection 측정 결과",
+  "note": "강화된 검토 프롬프트 적용 후 2회 독립 실행. 공통 채점 사례만 사용.",
+  "runs_used": {
+    "on": [
+      "hong-gil-dong_reflection-on_20260811-165631.json",
+      "hong-gil-dong_reflection-on_20260811-175152.json"
+    ],
+    "off": [
+      "hong-gil-dong_reflection-off_20260811-171354.json",
+      "hong-gil-dong_reflection-off_20260811-180642.json"
+    ]
+  },
+  "noise_same_setting": {
+    "on": 0.266,
+    "off": 0.235
+  },
+  "paired_common_cases": 17,
+  "overall": {
+    "off": 4.49,
+    "on": 4.539,
+    "delta": 0.049
+  },
+  "case_wins": {
+    "on": 7,
+    "off": 7,
+    "tie": 3
+  },
+  "latency_mean_s": {
+    "on": 35.2,
+    "off": 11.4
+  },
+  "latency_ratio": 3.09,
+  "persona_02_worldview_score": {
+    "off_pre_strengthening": 2,
+    "on_pre_strengthening": 1,
+    "off_post_strengthening": [
+      1,
+      1
+    ],
+    "on_post_strengthening": [
+      5,
+      5
+    ]
+  },
+  "excluded_counts": {
+    "on": [
+      0,
+      0
+    ],
+    "off": [
+      3,
+      2
+    ]
+  }
+}

@@ -1,0 +1,87 @@
+{
+  "common_case_count": 17,
+  "common_ids": [
+    "emotion-01",
+    "emotion-02",
+    "emotion-03",
+    "emotion-04",
+    "greeting-01",
+    "greeting-02",
+    "greeting-03",
+    "greeting-04",
+    "memory-01",
+    "persona-01",
+    "persona-02",
+    "persona-03",
+    "persona-04",
+    "worldview-01",
+    "worldview-02",
+    "worldview-03",
+    "worldview-04"
+  ],
+  "dropped_from_before": [],
+  "dropped_from_after": [
+    "memory-02",
+    "memory-03",
+    "memory-04"
+  ],
+  "before": {
+    "per_axis": {
+      "tone": 4.118,
+      "worldview": 4.353,
+      "memory": 4.647
+    },
+    "overall": 4.373,
+    "case_count": 17,
+    "per_category": {
+      "emotional_appeal": 4.25,
+      "greeting": 4.667,
+      "memory_recall": 4.333,
+      "persona_break": 4.417,
+      "worldview": 4.167
+    }
+  },
+  "after": {
+    "per_axis": {
+      "tone": 4.294,
+      "worldview": 4.824,
+      "memory": 5.0
+    },
+    "overall": 4.706,
+    "case_count": 17,
+    "per_category": {
+      "emotional_appeal": 4.5,
+      "greeting": 4.583,
+      "memory_recall": 5.0,
+      "persona_break": 5.0,
+      "worldview": 4.667
+    }
+  },
+  "deltas": {
+    "tone": 0.176,
+    "worldview": 0.471,
+    "memory": 0.353,
+    "overall": 0.333
+  },
+  "case_wins": {
+    "after": 7,
+    "before": 2,
+    "tie": 8
+  },
+  "latency": {
+    "off": {
+      "count": 17,
+      "mean_ms": 12369.9,
+      "median_ms": 11186.9,
+      "min_ms": 7377.9,
+      "max_ms": 17637.0
+    },
+    "on": {
+      "count": 17,
+      "mean_ms": 38510.4,
+      "median_ms": 37766.8,
+      "min_ms": 22451.1,
+      "max_ms": 73573.2
+    }
+  }
+}
