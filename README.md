@@ -1,6 +1,6 @@
 # Character OS
 
-[![CI](https://github.com/dongyo12/charactor_os/actions/workflows/ci.yml/badge.svg)](https://github.com/dongyo12/charactor_os/actions/workflows/ci.yml)
+[![CI](https://github.com/Biisairo/Charactor-OS/actions/workflows/ci.yml/badge.svg)](https://github.com/Biisairo/Charactor-OS/actions/workflows/ci.yml)
 ![Python](https://img.shields.io/badge/python-3.10%2B-blue)
 ![Tests](https://img.shields.io/badge/tests-203%20passing-brightgreen)
 
@@ -115,8 +115,8 @@ LLM 캐릭터 챗봇의 어려움은 모델 호출이 아니라 **상태 관리�
 ### 설치
 
 ```bash
-git clone https://github.com/dongyo12/charactor_os.git
-cd charactor_os
+git clone https://github.com/Biisairo/Charactor-OS.git
+cd Charactor-OS
 uv sync
 cp .env.example .env      # OPENAI_API_KEY 입력
 ```
