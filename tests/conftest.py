@@ -3,11 +3,14 @@
 from __future__ import annotations
 
 import shutil
+from collections.abc import Callable
 from dataclasses import dataclass
 from pathlib import Path
 
+import numpy as np
 import pytest
 
+from src.character_os import CharacterOS
 from src.llm.client import TrimmedMessage
 
 # ---------------------------------------------------------------------------
@@ -124,3 +127,109 @@ def examples_dir(character_dir: Path) -> str:
 def knowledge_dir(character_dir: Path) -> str:
     """테스트용 지식 디렉토리."""
     return str(character_dir / "knowledge")
+
+
+# ---------------------------------------------------------------------------
+# 파이프라인 테스트 지원 — 임베딩 우회, 선택적 실패 클라이언트, CharacterOS 조립
+#
+# 실제 LLM과 sentence-transformers를 모두 배제하여, 파이프라인 테스트가
+# API 키 없이 결정론적으로 동작하도록 한다 (REQ-02-9).
+# ---------------------------------------------------------------------------
+
+# 감정·기억 갱신은 각각 별도 LLM 호출이다. 프롬프트 본문의 고유 문구로
+# 어느 호출인지 식별하여, 특정 단계만 실패시킬 수 있게 한다.
+EMOTION_PROMPT_MARKER = "감정 상태를 업데이트하세요"
+MEMORY_PROMPT_MARKER = "구체적인 사실**만 추출하세요"
+
+
+def deterministic_embed(text: str) -> np.ndarray:
+    """텍스트에 대해 항상 같은 벡터를 반환하는 더미 임베딩.
+
+    sentence-transformers 모델 로드(수백 MB)를 건너뛰기 위한 대체물이다.
+    """
+    rng = np.random.RandomState(hash(text) % (2**31))
+    vec = rng.randn(384).astype(np.float32)
+    return vec / np.linalg.norm(vec)
+
+
+@pytest.fixture(autouse=True)
+def patch_embedding(monkeypatch):
+    """모든 테스트에서 SentenceTransformer 로드를 우회한다."""
+    stub = type(
+        "EmbeddingStub",
+        (),
+        {"encode": staticmethod(lambda text, normalize_embeddings=True: deterministic_embed(text))},
+    )()
+    monkeypatch.setattr(CharacterOS, "_embedding_model", stub)
+
+
+class PipelineMockClient(MockClient):
+    """파이프라인 전 구간에서 쓰이는 MockClient.
+
+    `CharacterOS._generate_response`는 call_llm(messages, use_stream, mute)로
+    호출하지만 emotion/memory.update는 response_format을 추가로 전달한다.
+    tools를 선택적으로 만들어 두 경로를 모두 받는다.
+
+    fail_when을 주면 해당 프롬프트에 대해서만 예외를 던진다 — 후처리 중
+    특정 단계만 실패시켜 롤백을 검증하기 위한 장치다.
+    """
+
+    def __init__(
+        self,
+        response: str = "안녕하세요! 저는 홍길동입니다.",
+        fail_when: Callable[[str], bool] | None = None,
+    ):
+        super().__init__(response=response)
+        self.all_call_records: list[dict] = []
+        self._fail_when = fail_when
+
+    def call_llm(
+        self,
+        messages,
+        tools=None,
+        use_stream=False,
+        mute=True,
+        response_format=None,
+        token_callback=None,
+    ) -> TrimmedMessage:
+        joined = " ".join(str(m.get("content", "")) for m in messages)
+        if self._fail_when is not None and self._fail_when(joined):
+            raise RuntimeError("주입된 LLM 실패")
+
+        self.all_call_records.append(
+            {
+                "messages": messages,
+                "use_stream": use_stream,
+                "response_format": response_format,
+            }
+        )
+        return super().call_llm(
+            messages=messages,
+            tools=tools or [],
+            use_stream=use_stream,
+            mute=mute,
+            response_format=response_format,
+            token_callback=token_callback,
+        )
+
+
+def make_character_os(
+    character_dir: Path,
+    state_dir: Path,
+    client: MockClient,
+    **overrides,
+) -> CharacterOS:
+    """상태 파일을 `state_dir`에 격리한 CharacterOS를 만든다."""
+    kwargs = {
+        "character_dir": str(character_dir),
+        "memory_db_path": str(state_dir / "memories.db"),
+        "emotion_save_path": str(state_dir / "emotions.json"),
+        "history_save_path": str(state_dir / "history.json"),
+        "debug": False,
+        "output": lambda _msg: None,
+        "model_type": "api",
+        "no_review": True,
+        "client": client,
+    }
+    kwargs.update(overrides)
+    return CharacterOS(**kwargs)

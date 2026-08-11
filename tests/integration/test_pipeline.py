@@ -8,79 +8,18 @@ from __future__ import annotations
 import json
 from pathlib import Path
 
-import numpy as np
 import pytest
 
-from src.character_os import CharacterOS
 from src.llm.client import TrimmedMessage
-from tests.conftest import MockClient, MockResponse
+from tests.conftest import MockResponse, PipelineMockClient, make_character_os
 
 # ---------------------------------------------------------------------------
 # helpers
+#
+# MockClient 확장·임베딩 우회·CharacterOS 조립은 conftest에 공용화되어 있다.
 # ---------------------------------------------------------------------------
 
-
-class _CompatMockClient(MockClient):
-    """CharacterOS 파이프라인 호환 MockClient.
-
-    CharacterOS._generate_response는 call_llm(messages, use_stream, mute)로
-    호출하지만, emotion/memory.update는 response_format을 추가로 전달한다.
-    MockClient의 tools 파라미터를 선택적으로 만들어 호환성을 확보한다.
-
-    all_call_records: 모든 call_llm 호출의 messages를 기록한다.
-    """
-
-    def __init__(self, response="안녕하세요! 저는 홍길동입니다."):
-        super().__init__(response=response)
-        self.all_call_records: list[dict] = []
-
-    def call_llm(
-        self,
-        messages,
-        tools=None,
-        use_stream=False,
-        mute=True,
-        response_format=None,
-        token_callback=None,
-    ):
-        self.all_call_records.append(
-            {
-                "messages": messages,
-                "use_stream": use_stream,
-                "response_format": response_format,
-            }
-        )
-        return super().call_llm(
-            messages=messages,
-            tools=tools or [],
-            use_stream=use_stream,
-            mute=mute,
-            response_format=response_format,
-            token_callback=token_callback,
-        )
-
-
-def _mock_embed(text: str) -> np.ndarray:
-    """의존성 없는 더미 임베딩 (SentenceTransformer 대체)."""
-    rng = np.random.RandomState(hash(text) % (2**31))
-    vec = rng.randn(384).astype(np.float32)
-    return vec / np.linalg.norm(vec)
-
-
-@pytest.fixture(autouse=True)
-def _patch_embedding(monkeypatch):
-    """모든 테스트에서 SentenceTransformer를 우회한다."""
-    monkeypatch.setattr(
-        CharacterOS,
-        "_embedding_model",
-        type(
-            "M",
-            (),
-            {
-                "encode": staticmethod(lambda text, normalize_embeddings=True: _mock_embed(text)),
-            },
-        )(),
-    )
+_CompatMockClient = PipelineMockClient
 
 
 def _make_cos(character_dir: Path, tmp_path: Path) -> tuple:
@@ -92,16 +31,11 @@ def _make_cos(character_dir: Path, tmp_path: Path) -> tuple:
     output_lines: list[str] = []
     mock_client = _CompatMockClient()
 
-    cos = CharacterOS(
-        character_dir=str(character_dir),
-        memory_db_path=str(tmp_path / "memories.db"),
-        emotion_save_path=str(tmp_path / "emotions.json"),
-        history_save_path=str(tmp_path / "history.json"),
-        debug=False,
+    cos = make_character_os(
+        character_dir,
+        tmp_path,
+        mock_client,
         output=output_lines.append,
-        model_type="api",
-        no_review=True,  # Reflection 비활성화 (MockClient 호환)
-        client=mock_client,
     )
 
     return cos, mock_client, output_lines

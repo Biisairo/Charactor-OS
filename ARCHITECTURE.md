@@ -195,7 +195,7 @@ cos = CharacterOS(character_dir=..., client=MockClient())
 
 - **API 키 없이 전체 파이프라인 테스트** — `git clone` 직후 `uv run pytest`가 통과합니다.
   CI에도 시크릿을 넣지 않습니다.
-- **결정론적 테스트** — 203개가 1초 내에 끝납니다. LLM 응답을 고정하므로 재현 가능합니다.
+- **결정론적 테스트** — 232개가 1초 내에 끝납니다. LLM 응답을 고정하므로 재현 가능합니다.
 - **실패 경로 검증** — `mock_client.call_llm`이 예외를 던지게 해서 LLM 실패 시
   `chat()`이 `None`을 반환하는지 검증합니다. 실제 LLM으로는 재현하기 어려운 경로입니다.
 
@@ -204,8 +204,8 @@ seed 기반 더미 벡터를 씁니다 — sentence-transformers 모델 로드(�
 
 ```
 tests/
-├── unit/           8개 모듈 + 경로 안전성, 격리 테스트
-└── integration/    3-stage end-to-end · REST API
+├── unit/           8개 모듈 · 경로 안전성 · CharacterWorker 동시성
+└── integration/    3-stage end-to-end · Stage 3 롤백 · 스트리밍 · REST API
 ```
 
 ---
