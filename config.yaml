@@ -13,3 +13,26 @@ model_type: api
 # 로컬 모델 설정 (model_type: local일 때)
 # local_model: mlx-community/Qwen3.5-4B-MLX-4bit
 # adapter_path: from_scratch/06_finetuning/adapters
+
+# ---------------------------------------------------------------------------
+# LLM 호출 운영 로그
+#
+# 모든 LLM 호출(응답 생성·Reflection·감정·기억)을 JSONL로 누적한다.
+# 디버그 플래그와 무관하게 항상 켜지며, 쓰기는 별도 스레드에서 처리하므로
+# 응답 지연에 더해지지 않는다.
+#
+# 분석 예:
+#   턴당 비용 합계   jq -s '[.[]|select(.event=="turn").cost_usd]|add' logs/llm_calls.jsonl
+#   실패한 호출      jq 'select(.error != "")' logs/llm_calls.jsonl
+#   특정 턴 재구성   jq 'select(.turn_id=="<id>")' logs/llm_calls.jsonl
+# ---------------------------------------------------------------------------
+call_log:
+  enabled: true
+  path: logs/llm_calls.jsonl
+  # 프롬프트·응답 원문을 함께 남길지. 끄면 토큰·비용만 남는다.
+  capture_payload: true
+  # 파일당 크기와 보관 개수 (50MB × 10 = 최대 500MB, 약 12,000턴)
+  max_bytes: 52428800
+  backup_count: 10
+  # 한 필드가 이 길이를 넘으면 자른다 (잘린 사실은 로그에 표시됨)
+  max_field_chars: 20000

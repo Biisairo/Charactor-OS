@@ -10,6 +10,7 @@ from pathlib import Path
 import numpy as np
 import pytest
 
+from src.call_log import CallLogger
 from src.character_os import CharacterOS
 from src.llm.client import TrimmedMessage
 
@@ -230,6 +231,8 @@ def make_character_os(
         "model_type": "api",
         "no_review": True,
         "client": client,
+        # 테스트가 실제 운영 로그 파일에 쓰지 않도록 비활성 로거를 주입한다
+        "call_logger": CallLogger(enabled=False),
     }
     kwargs.update(overrides)
     return CharacterOS(**kwargs)

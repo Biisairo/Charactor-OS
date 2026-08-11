@@ -2,11 +2,15 @@ import concurrent.futures
 import json
 import queue
 import threading
+import time
+import uuid
 from collections.abc import Callable, Generator
 from dataclasses import dataclass
 from pathlib import Path
 
+from src.call_log import CallLogger
 from src.llm.client import Client
+from src.metrics import CallMeter
 from src.modules import (
     EmotionModule,
     FewShotModule,
@@ -16,6 +20,7 @@ from src.modules import (
     PersonaModule,
     ReflectionReviewer,
 )
+from src.pricing import estimate_cost, load_price_table
 from src.prompts.engine import PromptEngine
 from src.trace import PipelineTrace
 
@@ -70,11 +75,14 @@ class CharacterOS:
         no_review: bool = False,
         trace: bool = False,
         client: object | None = None,
+        call_logger: CallLogger | None = None,
     ):
         """
         Args:
             client: LLM 클라이언트. 주입하면 `model_type`을 무시하고 그대로 사용한다.
                 테스트에서 실제 API 호출 없이 파이프라인을 검증하기 위한 진입점이다.
+            call_logger: LLM 호출 운영 로거. 생략하면 기본 경로에 기록한다.
+                테스트에서는 비활성 로거를 주입해 파일 쓰기를 막는다.
         """
         self._character_dir = Path(character_dir)
         self._trace_enabled = trace
@@ -167,11 +175,21 @@ class CharacterOS:
             self.emotion.set_triggers(triggers)
             self._log(f"[모듈 로드] 감정 트리거 주입: {len(triggers)}개", module="orchestrator")
 
+        # LLM 호출 관찰 — 라벨별 프록시를 주입해 호출 지점을 자동 분류한다.
+        #   · 턴 스냅샷(`--trace`)은 trace 플래그에 따른다
+        #   · 운영 로그는 디버그 플래그와 무관하게 항상 남긴다
+        self._price_table = load_price_table()
+        self._call_logger = call_logger if call_logger is not None else CallLogger()
+        self._turn_id = ""
+        self._meter = CallMeter(
+            sink=self._log_call, capture_payload=self._call_logger.capture_payload
+        )
+
         # Reflection 리뷰어 (no_review=True면 비활성화)
         self._no_review = no_review
         if not no_review:
             self.reviewer = ReflectionReviewer(
-                client=self.client,
+                client=self._meter.wrap(self.client, "reflection"),
                 persona=self.persona,
                 emotion=self.emotion,
                 debug=debug,
@@ -305,7 +323,7 @@ class CharacterOS:
             ]
             if extra_user_msg:
                 messages.append({"role": "user", "content": extra_user_msg})
-            result = self.client.call_llm(
+            result = self._meter.wrap(self.client, "response").call_llm(
                 messages=messages,
                 tools=[],
                 use_stream=True,
@@ -364,7 +382,7 @@ class CharacterOS:
         self._log(f"[사용자 입력] {user_input}", module="response")
         self._log("LLM 호출 시작...", module="response")
 
-        result = self.client.call_llm(
+        result = self._meter.wrap(self.client, "response").call_llm(
             messages=[
                 {"role": "system", "content": system_prompt},
                 {"role": "user", "content": user_input},
@@ -390,6 +408,9 @@ class CharacterOS:
             for token in cos.chat_stream("안녕"):
                 print(token, end="", flush=True)
         """
+        self._turn_id = uuid.uuid4().hex[:12]
+        self._meter.reset()  # 계측은 턴 단위
+
         # Stage 1: 컨텍스트 수집
         try:
             context = self._gather_context(user_input)
@@ -458,7 +479,7 @@ class CharacterOS:
                     self.emotion.update,
                     user_input,
                     response,
-                    self.client,
+                    self._meter.wrap(self.client, "emotion"),
                     history_context=history_context,
                     prompt_callback=lambda module, prompt: self._log(
                         f"[{module} 프롬프트]", module="postprocess", data=prompt
@@ -477,7 +498,7 @@ class CharacterOS:
                 user_input,
                 response,
                 self.emotion.get_state(),
-                self.client,
+                self._meter.wrap(self.client, "memory"),
                 history_context=history_context,
                 prompt_callback=lambda module, prompt: self._log(
                     f"[{module} 프롬프트]", module="postprocess", data=prompt
@@ -509,12 +530,54 @@ class CharacterOS:
         self.history.add_turn("user", user_input)
         self.history.add_turn("character", response)
 
+    def _log_call(self, record) -> None:
+        """계측된 호출 1건을 운영 로그로 넘긴다 (비동기)."""
+        model = getattr(getattr(self.client, "env", None), "model", "") or ""
+        self._call_logger.log_call(
+            record,
+            model=model,
+            cost_usd=estimate_cost(
+                model, record.prompt_tokens, record.completion_tokens, self._price_table
+            ),
+            turn_id=self._turn_id,
+            character=self._character_dir.name,
+        )
+
+    def _log_turn(self, user_input: str, response: str, started: float, error: str = "") -> None:
+        """턴 요약을 운영 로그에 남긴다. 호출 단위 기록과 turn_id로 이어진다."""
+        self._call_logger.log_turn(
+            turn_id=self._turn_id,
+            character=self._character_dir.name,
+            user_input=user_input,
+            response=response,
+            metrics=self._collect_metrics(),
+            duration_ms=(time.perf_counter() - started) * 1000,
+            error=error,
+        )
+
+    def _collect_metrics(self) -> dict:
+        """이번 턴의 LLM 호출 집계 + 추정 비용."""
+        summary = self._meter.summary()
+        model = getattr(getattr(self.client, "env", None), "model", "") or "(미지정)"
+        summary["model"] = model
+        summary["cost_usd"] = estimate_cost(
+            model,
+            summary["prompt_tokens"],
+            summary["completion_tokens"],
+            self._price_table,
+        )
+        return summary
+
     def chat(self, user_input: str) -> str | None:
         """전체 3-stage 파이프라인 실행. 후처리 실패 시 None 반환."""
         self._log("")
         self._log("=" * 60, module="orchestrator")
         self._log(f"chat() 호출: {user_input}", module="orchestrator")
         self._log("=" * 60, module="orchestrator")
+
+        self._turn_id = uuid.uuid4().hex[:12]
+        self._meter.reset()  # 계측은 턴 단위
+        turn_started = time.perf_counter()
 
         trace = PipelineTrace() if self._trace_enabled else None
         if trace:
@@ -537,7 +600,9 @@ class CharacterOS:
         except Exception as e:
             self._log(f"Stage 1 실패: {e}", module="orchestrator")
             self._output(f"\n오류: 컨텍스트 수집 실패 — {e}")
+            self._log_turn(user_input, "", turn_started, error=f"Stage 1: {e}")
             if trace:
+                trace.metrics = self._collect_metrics()
                 trace.finish(error=str(e))
                 self._last_trace = trace
             return None
@@ -553,7 +618,9 @@ class CharacterOS:
         except Exception as e:
             self._log(f"Stage 2 실패: {e}", module="orchestrator")
             self._output(f"\n오류: 응답 생성 실패 — {e}")
+            self._log_turn(user_input, "", turn_started, error=f"Stage 2: {e}")
             if trace:
+                trace.metrics = self._collect_metrics()
                 trace.finish(error=str(e))
                 self._last_trace = trace
             return None
@@ -573,15 +640,19 @@ class CharacterOS:
         except Exception as e:
             self._log(f"Stage 3 실패, 롤백 완료: {e}", module="orchestrator")
             self._output(f"\n오류: 후처리 실패, 대화가 저장되지 않았습니다 — {e}")
+            self._log_turn(user_input, response, turn_started, error=f"Stage 3: {e}")
             if trace:
+                trace.metrics = self._collect_metrics()
                 trace.finish(error=str(e))
                 self._last_trace = trace
             return None
 
         # 후처리 성공 시에만 응답 출력
         self._output(f"캐릭터: {response}")
+        self._log_turn(user_input, response, turn_started)
 
         if trace:
+            trace.metrics = self._collect_metrics()
             trace.finish(response=response)
             self._last_trace = trace
 

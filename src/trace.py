@@ -44,6 +44,8 @@ class PipelineTrace:
     stages: list[StageTrace] = field(default_factory=list)
     response: str = ""
     error: str | None = None
+    # LLM 호출 계측 — 호출 수·토큰·라벨별 분해·추정 비용
+    metrics: dict = field(default_factory=dict)
 
     def start(self, user_input: str) -> None:
         self.user_input = user_input
@@ -67,6 +69,7 @@ class PipelineTrace:
             "total_duration_ms": round(self.total_duration_ms, 2),
             "response_length": len(self.response),
             "error": self.error,
+            "metrics": self.metrics,
             "stages": [
                 {
                     "name": s.name,
@@ -76,3 +79,42 @@ class PipelineTrace:
                 for s in self.stages
             ],
         }
+
+
+def format_trace(trace: PipelineTrace | None) -> str:
+    """트레이스를 사람이 읽는 형태로 출력한다 (`--trace`).
+
+    호출 수·토큰·비용을 라벨별로 보여준다. 어느 단계가 비용을 쓰는지
+    한눈에 보이지 않으면 트레이싱의 의미가 없다.
+    """
+    if trace is None:
+        return "(트레이스 없음)"
+
+    lines = [f"── trace ── {trace.total_duration_ms:,.0f}ms"]
+
+    for stage in trace.stages:
+        lines.append(f"  [{stage.name}] {stage.duration_ms:,.0f}ms")
+        for key, value in stage.details.items():
+            lines.append(f"      {key}: {value}")
+
+    m = trace.metrics
+    if m:
+        from src.pricing import format_cost
+
+        lines.append(f"  [LLM] 호출 {m['calls']}회 · 모델 {m.get('model', '?')}")
+        lines.append(
+            f"      토큰  입력 {m['prompt_tokens']:,} / 출력 {m['completion_tokens']:,}"
+            f" / 합계 {m['total_tokens']:,}"
+        )
+        lines.append(f"      비용  {format_cost(m.get('cost_usd'))}")
+        for label, bucket in m.get("by_label", {}).items():
+            lines.append(
+                f"      {label:<11} {bucket['calls']}회"
+                f"  in {bucket['prompt_tokens']:,} / out {bucket['completion_tokens']:,}"
+                f"  {bucket['duration_ms']:,.0f}ms"
+            )
+
+    if trace.error:
+        lines.append(f"  오류: {trace.error}")
+
+    return "\n".join(lines)

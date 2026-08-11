@@ -6,7 +6,9 @@ from prompt_toolkit import PromptSession
 from prompt_toolkit.auto_suggest import AutoSuggestFromHistory
 from prompt_toolkit.history import FileHistory
 
+from src.call_log import from_config as call_logger_from_config
 from src.character_os import CharacterOS
+from src.trace import format_trace
 
 DEFAULT_CONFIG = {
     "character_dir": "characters/hong-gil-dong",
@@ -68,6 +70,7 @@ def main():
         adapter_path=config["adapter_path"],
         no_review=args.no_review,
         trace=args.trace,
+        call_logger=call_logger_from_config(config),
     )
 
     print("캐릭터가 준비되었습니다. 대화를 시작하세요!")
@@ -90,6 +93,9 @@ def main():
 
             print()
             cos.chat(user_input)
+            if args.trace:
+                print()
+                print(format_trace(cos._last_trace))
             print()
 
         except KeyboardInterrupt:

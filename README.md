@@ -2,7 +2,7 @@
 
 [![CI](https://github.com/Biisairo/Charactor-OS/actions/workflows/ci.yml/badge.svg)](https://github.com/Biisairo/Charactor-OS/actions/workflows/ci.yml)
 ![Python](https://img.shields.io/badge/python-3.10%2B-blue)
-![Tests](https://img.shields.io/badge/tests-342%20passing-brightgreen)
+![Tests](https://img.shields.io/badge/tests-412%20passing-brightgreen)
 
 > 감정·기억·지식을 가진 캐릭터가 일관된 인격으로 대화하는 **LLM 에이전트 런타임**.
 >
@@ -52,8 +52,9 @@ LLM 캐릭터 챗봇의 어려움은 모델 호출이 아니라 **상태 관리�
 | LLM이 캐릭터 말투를 이탈한다 | **Reflection 패턴** — 초안을 스스로 검토하고 재생성. 상한 2회로 비용·지연 제한 |
 | 후처리 중 실패하면 상태가 깨진다 | **스냅샷 기반 롤백** — 감정·기억·히스토리를 원자적으로 되돌린 뒤 예외 전파 |
 | 에이전트가 왜 그렇게 답했는지 알 수 없다 | **PipelineTrace** — Stage별 소요 시간·토큰·모듈 기여도 기록, `GET /api/trace/last` |
-| LLM 호출 없이는 테스트가 불가능하다 | **클라이언트 의존성 주입** — API 키 없이 342개 테스트가 3초 내 완주 |
+| LLM 호출 없이는 테스트가 불가능하다 | **클라이언트 의존성 주입** — API 키 없이 412개 테스트가 3초 내 완주 |
 | 개선했다는 걸 어떻게 아는가 | **평가 하네스** — 골든 데이터셋 20건 × LLM-as-judge 3축 채점 |
+| 운영 중 무슨 일이 있었는지 알 수 없다 | **LLM 호출 운영 로그** — 프롬프트·응답 원문 + 토큰·비용을 비동기 append |
 
 ---
 
@@ -102,15 +103,23 @@ Reflection과 강화된 검토 기준이 **함께 있을 때만** 해결됩니�
 "평균이 조금 낮은 응답"이 아니라 "캐릭터가 완전히 무너지는 응답"인데,
 평균은 후자에 거의 반응하지 않습니다.
 
-### 비용
+### 비용 — 실측
+
+`--trace`가 턴당 호출·토큰·비용을 집계합니다 (대상 `mimo-v2.5`, 단가 `pricing.yaml`).
 
 | | off | on | 배율 |
 |---|---|---|---|
-| 평균 응답 지연 | 11.4s | 35.2s | **3.09x** |
-| 최대 | 17.7s | 73.6s | |
+| LLM 호출 | 3.0회 | 5.2회 | 1.73x |
+| 입력 토큰 | 2,071 | 4,268 | 2.06x |
+| 출력 토큰 | 525 | 1,844 | **3.51x** |
+| 비용 / 턴 | $0.00044 | $0.00111 | **2.55x** |
+| 지연 | 14.0s | 33.2s | 2.37x |
+
+호출 수(1.73x)만으로 비용을 추정하면 과소평가합니다. **출력 토큰이 3.5배**로 가장 크게 늘고,
+그 절반가량이 검토기가 쓰는 **검토문**입니다(턴당 941 토큰). 최적화 여지가 명확한 지점입니다.
 
 **결론**: Reflection을 유지합니다. 근거는 총점이 아니라 재현된 실패 방지입니다.
-다만 지연 3배는 남는 비용이며, `--no-review`로 끌 수 있습니다.
+다만 비용 2.6배·지연 2.4배는 남는 대가이며, `--no-review`로 끌 수 있습니다.
 
 부수 효과로 **프로바이더 콘텐츠 필터 거부를 복구**합니다 — off는 3회 재시도해도
 실패한 사례를 on은 전부 정상 처리했습니다(2회 실행 모두).
@@ -189,17 +198,45 @@ cp .env.example .env      # OPENAI_API_KEY 입력
 
 ```bash
 uv run pytest -q
-# 342 passed in 0.96s
+# 412 passed in 1.35s
 ```
 
 ### CLI 대화
 
 ```bash
 uv run python main.py
-uv run python main.py --trace       # 파이프라인 트레이싱 출력
+uv run python main.py --trace       # 턴당 호출·토큰·비용 출력
 uv run python main.py --no-review   # Reflection 비활성화 (비용 절감)
 uv run python main.py --debug       # 모듈별 상세 로그
 ```
+
+`--trace` 출력 예시:
+
+```
+── trace ── 14,016ms
+  [context] 12ms  [response] 9,840ms  [postprocess] 4,164ms
+  [LLM] 호출 5회 · 모델 mimo-v2.5
+      토큰  입력 4,268 / 출력 1,844 / 합계 6,112
+      비용  $0.001114
+      response    1.6회  in 1,866 / out 866
+      reflection  1.6회  in 1,428 / out 941
+      emotion     1.0회  in   527 / out  28
+      memory      1.0회  in   448 / out   9
+```
+
+### 운영 로그
+
+모든 LLM 호출이 `logs/llm_calls.jsonl`에 누적됩니다. 디버그 플래그와 무관하게
+항상 켜지며, 쓰기는 별도 스레드라 응답 지연에 더해지지 않습니다.
+**프롬프트와 응답 원문이 함께 남아 로그만으로 대화를 재구성할 수 있습니다.**
+
+```bash
+jq -s '[.[]|select(.event=="turn").cost_usd]|add' logs/llm_calls.jsonl   # 누적 비용
+jq 'select(.error != "")' logs/llm_calls.jsonl                            # 실패한 호출
+jq 'select(.turn_id=="a1b2c3")' logs/llm_calls.jsonl                      # 특정 턴 전체
+```
+
+설정은 `config.yaml`의 `call_log` 섹션에서 바꿉니다 (경로·회전 크기·원문 수집 여부).
 
 ### 웹 UI
 

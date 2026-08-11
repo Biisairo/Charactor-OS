@@ -39,6 +39,7 @@ from fastapi.responses import FileResponse
 from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel
 
+from src.call_log import from_config as call_logger_from_config
 from src.character_os import CharacterOS
 
 # ---------------------------------------------------------------------------
@@ -177,10 +178,14 @@ async def lifespan(app: FastAPI):
         adapter_path=_config["adapter_path"],
         debug=True,
         trace=True,
+        call_logger=call_logger_from_config(_config),
     )
     _worker = CharacterWorker(cos)
     yield
     _worker.shutdown()
+    # 종료 시 큐에 남은 호출 로그를 디스크까지 밀어낸다.
+    # atexit에도 걸려 있지만, 서버 수명주기에서 명시적으로 비우는 편이 확실하다.
+    cos._call_logger.shutdown()
     _worker = None
 
 
@@ -429,6 +434,7 @@ async def switch_character(req: SwitchCharacterRequest):
     _worker = CharacterWorker(new_cos)
     if old_worker:
         old_worker.shutdown()
+        old_worker.cos._call_logger.shutdown()
 
     return {"status": "ok", "character": req.character_id}
 
