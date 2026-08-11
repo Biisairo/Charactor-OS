@@ -51,8 +51,8 @@ persist (SQLite / JSON)        ← 실패해도 롤백 불필요 (아직 미저�
 디스크는 애초에 건드리지 않았으므로 부분 저장 상태가 존재하지 않습니다.
 
 ```python
-emotion_snap  = self.emotion.snapshot()
-memory_count  = self.memory.snapshot_count()
+emotion_snap = self.emotion.snapshot()
+memory_count = self.memory.snapshot_count()
 history_count = self.history.count()
 try:
     ...
@@ -118,7 +118,7 @@ Persona와 Emotion을 Always에 둔 것도 같은 이유입니다. 이 둘이 �
 top-k는 "k개를 채운다"는 뜻이지 "관련 있는 것만 준다"는 뜻이 아닙니다.
 
 ```python
-MIN_RELEVANCE_SCORE = 0.3   # 코사인 유사도
+MIN_RELEVANCE_SCORE = 0.3  # 코사인 유사도
 
 # 점수 필터링 → 정렬 → top-k  (순서가 중요)
 ```
@@ -195,7 +195,7 @@ cos = CharacterOS(character_dir=..., client=MockClient())
 
 - **API 키 없이 전체 파이프라인 테스트** — `git clone` 직후 `uv run pytest`가 통과합니다.
   CI에도 시크릿을 넣지 않습니다.
-- **결정론적 테스트** — 175개가 2초 내에 끝납니다. LLM 응답을 고정하므로 재현 가능합니다.
+- **결정론적 테스트** — 203개가 1초 내에 끝납니다. LLM 응답을 고정하므로 재현 가능합니다.
 - **실패 경로 검증** — `mock_client.call_llm`이 예외를 던지게 해서 Stage 3 롤백을 실제로 검증합니다.
   실제 LLM으로는 재현하기 어려운 경로입니다.
 
@@ -204,7 +204,7 @@ seed 기반 더미 벡터를 씁니다 — sentence-transformers 모델 로드(�
 
 ```
 tests/
-├── unit/           8개 모듈, 격리 테스트
+├── unit/           8개 모듈 + 경로 안전성, 격리 테스트
 └── integration/    3-stage end-to-end · 롤백 · 스트리밍 · REST API
 ```
 
@@ -232,6 +232,41 @@ WebSocket 스트리밍은 워커가 토큰을 `Queue`에 넣고, 이벤트 루�
 > **확장 시 한계**: 캐릭터 하나당 스레드 하나이므로 동시 사용자가 늘면 대화가 직렬화됩니다.
 > 멀티 유저로 가려면 세션별 `CharacterOS` 인스턴스 + 워커 풀이 필요하고,
 > 그 시점에는 상태 영속화도 파일에서 DB로 옮겨야 합니다.
+
+### 경로 안전성
+
+API는 캐릭터를 파일시스템 디렉토리로 다루므로, `character_id`와 지식 파일명이
+URL·요청 본문에서 그대로 들어와 경로가 됩니다. 검증이 없으면 `../../etc/passwd` 같은
+입력으로 임의 파일 읽기·쓰기, 심지어 `rmtree`로 임의 디렉토리 삭제가 가능합니다.
+
+모든 진입점을 `_safe_child(base, segment, pattern)` 하나로 통과시킵니다.
+
+```python
+def _safe_child(base: Path, segment: str, pattern: re.Pattern[str]) -> Path:
+    if not pattern.fullmatch(segment):  # 1. 허용 문자만 (점·슬래시 불가)
+        raise HTTPException(400, ...)
+    resolved = (base / segment).resolve()
+    if resolved.parent != base.resolve():  # 2. resolve 후 위치 재확인
+        raise HTTPException(400, ...)
+    return resolved
+```
+
+**두 겹인 이유**: 형식 검증만으로도 `..`와 `/`는 막힙니다. 하지만 형식이 완전히 정상인
+이름이 base 밖을 가리키는 **심볼릭 링크**일 수 있고, 이건 문자열 검사로는 잡히지 않습니다.
+resolve 후 부모를 비교하면 두 경우가 모두 닫힙니다.
+
+같은 이유로 "활성 캐릭터는 삭제 불가" 가드도 이름 문자열이 아니라
+**resolve된 경로**로 비교합니다. 문자열 비교는 다른 표기로 같은 디렉토리를 가리켜 우회됩니다.
+
+지식 파일 쓰기는 확장자까지 허용 목록으로 제한합니다(`yaml|yml|json|md|txt`).
+경로를 벗어나지 않더라도 지식 디렉토리에 `.sh`나 `.env`를 쓸 이유가 없습니다.
+
+SPA fallback(`GET /{full_path:path}`)도 같은 문제를 가집니다. 여기서는 400 대신
+containment 검사에 실패하면 `index.html`로 폴백합니다 — 정상 SPA 라우트와
+공격 시도를 응답으로 구분해주지 않기 위해서입니다.
+
+`tests/unit/test_path_safety.py`가 탈출 시도 20여 종(상대 경로, 절대 경로, 백슬래시,
+NUL 바이트, 심볼릭 링크)을 검증합니다.
 
 ---
 

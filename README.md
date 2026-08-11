@@ -2,7 +2,7 @@
 
 [![CI](https://github.com/dongyo12/charactor_os/actions/workflows/ci.yml/badge.svg)](https://github.com/dongyo12/charactor_os/actions/workflows/ci.yml)
 ![Python](https://img.shields.io/badge/python-3.10%2B-blue)
-![Tests](https://img.shields.io/badge/tests-175%20passing-brightgreen)
+![Tests](https://img.shields.io/badge/tests-203%20passing-brightgreen)
 
 > 감정·기억·지식을 가진 캐릭터가 일관된 인격으로 대화하는 **LLM 에이전트 런타임**.
 >
@@ -52,7 +52,7 @@ LLM 캐릭터 챗봇의 어려움은 모델 호출이 아니라 **상태 관리�
 | LLM이 캐릭터 말투를 이탈한다 | **Reflection 패턴** — 초안을 스스로 검토하고 재생성. 상한 2회로 비용·지연 제한 |
 | 후처리 중 실패하면 상태가 깨진다 | **스냅샷 기반 롤백** — 감정·기억·히스토리를 원자적으로 되돌린 뒤 예외 전파 |
 | 에이전트가 왜 그렇게 답했는지 알 수 없다 | **PipelineTrace** — Stage별 소요 시간·토큰·모듈 기여도 기록, `GET /api/trace/last` |
-| LLM 호출 없이는 테스트가 불가능하다 | **클라이언트 의존성 주입** — API 키 없이 175개 테스트가 2초 내 완주 |
+| LLM 호출 없이는 테스트가 불가능하다 | **클라이언트 의존성 주입** — API 키 없이 203개 테스트가 1초 내 완주 |
 
 ---
 
@@ -125,7 +125,7 @@ cp .env.example .env      # OPENAI_API_KEY 입력
 
 ```bash
 uv run pytest -q
-# 175 passed in 2.27s
+# 203 passed in 0.67s
 ```
 
 ### CLI 대화
@@ -196,7 +196,7 @@ src/
 └── api/server.py         # FastAPI REST + WebSocket
 
 tests/
-├── unit/                 # 모듈 단위 (8개 파일)
+├── unit/                 # 모듈 단위 + 경로 안전성 (9개 파일)
 └── integration/          # 파이프라인 · API
 
 spec/                     # 모듈별 설계 명세 9종

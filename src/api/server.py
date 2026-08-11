@@ -23,6 +23,9 @@ from __future__ import annotations
 
 import argparse
 import asyncio
+import os
+import re
+import shutil
 import threading
 import time
 from collections.abc import Callable
@@ -114,6 +117,40 @@ def _load_config(path: str) -> dict:
         with open(config_file, encoding="utf-8") as f:
             return yaml.safe_load(f) or {}
     return {}
+
+
+# ---------------------------------------------------------------------------
+# 경로 안전성
+#
+# character_id, 지식 파일명 등은 URL/요청 본문에서 오는 값이므로 그대로
+# 경로에 붙이면 "../../etc/passwd" 같은 입력으로 디렉토리를 벗어날 수 있다.
+# 형식 검증(허용 문자만)과 resolve 후 위치 확인을 함께 적용한다.
+# ---------------------------------------------------------------------------
+
+CHARACTERS_DIR = Path("characters")
+
+# 캐릭터 디렉토리명: 영숫자·한글·밑줄·하이픈만 (점·슬래시 불가)
+SAFE_SEGMENT = re.compile(r"[A-Za-z0-9가-힣_-]+")
+# 지식 파일명: 위 문자 + 허용된 확장자
+SAFE_FILENAME = re.compile(r"[A-Za-z0-9가-힣_-]+\.(yaml|yml|json|md|txt)")
+
+
+def _safe_child(base: Path, segment: str, pattern: re.Pattern[str]) -> Path:
+    """`base` 바로 아래에 있는 경로를 검증하여 반환한다.
+
+    형식 검증과 위치 확인을 모두 통과해야 한다. 형식 검증만으로도 충분하지만,
+    resolve 후 부모가 `base`인지 재확인하여 심볼릭 링크 우회까지 막는다.
+
+    Raises:
+        HTTPException: 형식이 맞지 않거나 `base`를 벗어나는 경우 400.
+    """
+    if not pattern.fullmatch(segment):
+        raise HTTPException(status_code=400, detail=f"허용되지 않는 이름입니다: {segment}")
+
+    resolved = (base / segment).resolve()
+    if resolved.parent != base.resolve():
+        raise HTTPException(status_code=400, detail=f"허용되지 않는 경로입니다: {segment}")
+    return resolved
 
 
 # ---------------------------------------------------------------------------
@@ -368,7 +405,7 @@ async def switch_character(req: SwitchCharacterRequest):
     """캐릭터를 전환한다 — CharacterOS를 재생성한다."""
     global _worker
 
-    character_dir = Path("characters") / req.character_id
+    character_dir = _safe_child(CHARACTERS_DIR, req.character_id, SAFE_SEGMENT)
     if not character_dir.exists():
         raise HTTPException(
             status_code=404, detail=f"캐릭터를 찾을 수 없습니다: {req.character_id}"
@@ -404,8 +441,6 @@ class CreateCharacterRequest(BaseModel):
 @app.post("/api/characters")
 def create_character(req: CreateCharacterRequest):
     """새 캐릭터를 생성한다."""
-    import re
-
     import yaml as _yaml
 
     # 디렉토리 이름: 이름을 kebab-case로 변환
@@ -413,7 +448,7 @@ def create_character(req: CreateCharacterRequest):
     if not char_id:
         char_id = f"character-{int(time.time())}"
 
-    char_dir = Path("characters") / char_id
+    char_dir = _safe_child(CHARACTERS_DIR, char_id, SAFE_SEGMENT)
     if char_dir.exists():
         raise HTTPException(status_code=409, detail=f"이미 존재하는 캐릭터입니다: {char_id}")
 
@@ -482,18 +517,17 @@ def create_character(req: CreateCharacterRequest):
 @app.delete("/api/characters/{character_id}")
 def delete_character(character_id: str):
     """캐릭터를 삭제한다. 활성 캐릭터는 삭제할 수 없다."""
-    import shutil
-
     cos = _get_cos()
-    active_id = Path(cos._character_dir).name if cos._character_dir else None
+    char_dir = _safe_child(CHARACTERS_DIR, character_id, SAFE_SEGMENT)
 
-    if character_id == active_id:
+    # 활성 캐릭터 판정은 resolve된 경로로 비교한다 (이름 문자열 비교는 우회 가능)
+    active_dir = Path(cos._character_dir).resolve() if cos._character_dir else None
+    if active_dir is not None and char_dir == active_dir:
         raise HTTPException(
             status_code=400,
             detail="활성 캐릭터는 삭제할 수 없습니다. 먼저 다른 캐릭터로 전환하세요.",
         )
 
-    char_dir = Path("characters") / character_id
     if not char_dir.exists():
         raise HTTPException(status_code=404, detail=f"캐릭터를 찾을 수 없습니다: {character_id}")
 
@@ -657,7 +691,7 @@ def get_knowledge(name: str):
     cos = _get_cos()
     knowledge_dir = cos.knowledge._dir
 
-    # 확자자 포함/미포함 모두 시도
+    # 확장자 포함/미포함 모두 시도
     for candidate in [
         name,
         f"{name}.yaml",
@@ -666,8 +700,10 @@ def get_knowledge(name: str):
         f"{name}.md",
         f"{name}.txt",
     ]:
-        file_path = knowledge_dir / candidate
-        if file_path.exists():
+        if not SAFE_FILENAME.fullmatch(candidate):
+            continue  # 확장자 없는 원본 name 등 — 다음 후보로
+        file_path = _safe_child(knowledge_dir, candidate, SAFE_FILENAME)
+        if file_path.is_file():
             return {"content": file_path.read_text(encoding="utf-8")}
 
     raise HTTPException(status_code=404, detail=f"지식 파일을 찾을 수 없습니다: {name}")
@@ -679,10 +715,10 @@ def update_knowledge(name: str, req: KnowledgeUpdate):
     cos = _get_cos()
 
     knowledge_dir = cos.knowledge._dir
-    file_path = knowledge_dir / name
 
-    # 파일 쓰기
+    # 쓰기는 확장자를 포함한 정확한 파일명만 허용한다
     knowledge_dir.mkdir(parents=True, exist_ok=True)
+    file_path = _safe_child(knowledge_dir, name, SAFE_FILENAME)
     file_path.write_text(req.content, encoding="utf-8")
 
     # 다시 로드
@@ -796,13 +832,21 @@ if FRONTEND_DIR.exists():
 
 @app.get("/{full_path:path}")
 async def serve_frontend(full_path: str):
-    """프론트엔드 정적 파일 서빙 (SPA fallback)."""
-    if FRONTEND_DIR.exists():
-        file_path = FRONTEND_DIR / full_path
-        if file_path.is_file():
-            return FileResponse(file_path)
-        return FileResponse(FRONTEND_DIR / "index.html")
-    return {"error": "Frontend not built. Run: cd frontend && npm run build"}
+    """프론트엔드 정적 파일 서빙 (SPA fallback).
+
+    dist 디렉토리를 벗어나는 경로는 파일을 반환하지 않고 index.html로 폴백한다.
+    """
+    if not FRONTEND_DIR.exists():
+        return {"error": "Frontend not built. Run: cd frontend && npm run build"}
+
+    index = FRONTEND_DIR / "index.html"
+    base = FRONTEND_DIR.resolve()
+    target = (FRONTEND_DIR / full_path).resolve()
+
+    # dist 하위인지 확인 — 벗어나면 SPA 라우트로 간주하고 index.html
+    if not str(target).startswith(str(base) + os.sep) or not target.is_file():
+        return FileResponse(index)
+    return FileResponse(target)
 
 
 # ---------------------------------------------------------------------------
