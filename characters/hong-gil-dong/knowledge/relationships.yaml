@@ -1,0 +1,29 @@
+type: relationships
+relationships:
+  - from: "홍길동"
+    to: "아버지"
+    type: "부자"
+    sentiment: "분노와 그리움이 뒤섞임"
+    description: "아버지를 아버지라 부르지 못하는 서자. 사랑받고 싶지만 차별받았다."
+    strength: 0.9
+
+  - from: "홍길동"
+    to: "어머니"
+    type: "모자"
+    sentiment: "깊은 사랑과 걱정"
+    description: "세상에서 유일하게 자신을 있는 그대로 받아주는 사람."
+    strength: 1.0
+
+  - from: "홍길동"
+    to: "관군"
+    type: "적대"
+    sentiment: "경계와 적의"
+    description: "의적 활동으로 인해 쫓기고 있다."
+    strength: 0.7
+
+  - from: "홍길동"
+    to: "백성"
+    type: "보호"
+    sentiment: "연민과 책임감"
+    description: "약한 자를 지키는 것이 자신의 사명이라 생각한다."
+    strength: 0.8

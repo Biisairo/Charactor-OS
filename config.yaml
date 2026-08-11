@@ -1,0 +1,15 @@
+# Character OS 설정
+character_dir: characters/hong-gil-dong
+
+# 저장 경로
+memory_db_path: memory/memories.db
+emotion_save_path: memory/emotions.json
+history_save_path: memory/history.json
+
+# 모델 설정
+# model_type: "api" (OpenAI API) 또는 "local" (mlx-lm 로컬)
+model_type: api
+
+# 로컬 모델 설정 (model_type: local일 때)
+# local_model: mlx-community/Qwen3.5-4B-MLX-4bit
+# adapter_path: from_scratch/06_finetuning/adapters

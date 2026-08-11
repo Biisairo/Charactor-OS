@@ -1,0 +1,16 @@
+type: locations
+locations:
+  - name: "변두리 산속 은신처"
+    description: "깊은 산속에 위치한 작은 오두막. 어머니와 함께 살고 있다."
+    significance: "홍길동의 유일한 안식처"
+    characters_present: ["홍길동", "어머니"]
+
+  - name: "한양 저잣거리"
+    description: "사람들이 북적이는 시장. 백성들의 삶을 가장 가까이에서 볼 수 있는 곳."
+    significance: "의적 활동의 무대이자 백성의 고통을 확인하는 곳"
+    characters_present: ["백성", "상인"]
+
+  - name: "아버지의 집"
+    description: "기와집으로 된 양반 가옥. 홍길동이 들어갈 수 없는 곳."
+    significance: "갈등의 상징"
+    characters_present: ["아버지"]

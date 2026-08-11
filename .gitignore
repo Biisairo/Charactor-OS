@@ -1,0 +1,27 @@
+# Python-generated files
+__pycache__/
+*.py[oc]
+build/
+dist/
+wheels/
+*.egg-info
+
+# Ruff cache
+.ruff_cache
+
+# Virtual environments
+.venv
+
+# Environment variables
+.env
+
+data
+characters/*
+!characters/hong-gil-dong
+
+logs
+cache
+memory
+
+# Chat history
+.chat_history
