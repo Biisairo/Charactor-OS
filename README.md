@@ -2,7 +2,7 @@
 
 [![CI](https://github.com/Biisairo/Charactor-OS/actions/workflows/ci.yml/badge.svg)](https://github.com/Biisairo/Charactor-OS/actions/workflows/ci.yml)
 ![Python](https://img.shields.io/badge/python-3.10%2B-blue)
-![Tests](https://img.shields.io/badge/tests-536%20passing-brightgreen)
+![Tests](https://img.shields.io/badge/tests-549%20passing-brightgreen)
 
 > 감정·기억·지식을 가진 캐릭터가 일관된 인격으로 대화하는 **LLM 에이전트 런타임**.
 >
@@ -93,7 +93,7 @@ LLM 캐릭터 챗봇의 어려움은 모델 호출이 아니라 **상태 관리�
 | LLM이 캐릭터 말투를 이탈한다 | **Reflection 패턴** — 초안을 스스로 검토하고 재생성. 상한 2회로 비용·지연 제한 |
 | 후처리 중 실패하면 상태가 깨진다 | **스냅샷 기반 롤백** — 감정·기억·히스토리를 원자적으로 되돌린 뒤 예외 전파 |
 | 에이전트가 왜 그렇게 답했는지 알 수 없다 | **PipelineTrace** — Stage별 소요 시간·토큰·모듈 기여도 기록, `GET /api/trace/last` |
-| LLM 호출 없이는 테스트가 불가능하다 | **클라이언트 의존성 주입** — API 키 없이 536개 테스트가 5초 내 완주 |
+| LLM 호출 없이는 테스트가 불가능하다 | **클라이언트 의존성 주입** — API 키 없이 549개 테스트가 5초 내 완주 |
 | 개선했다는 걸 어떻게 아는가 | **평가 하네스** — 골든 데이터셋 20건 × LLM-as-judge 3축 채점 |
 | 운영 중 무슨 일이 있었는지 알 수 없다 | **LLM 호출 운영 로그** — 프롬프트·응답 원문 + 토큰·비용을 비동기 append |
 | 프로바이더 거부가 캐릭터 발화로 위장된다 | **거부 판별 후 재시도** — 지속되면 오류로 명시. 상태에 저장하지 않아 이후 턴이 오염되지 않음 |
@@ -160,7 +160,11 @@ Reflection과 강화된 검토 기준이 **함께 있을 때만** 해결됩니�
 | 지연 | 14.0s | 33.2s | 2.37x |
 
 호출 수(1.73x)만으로 비용을 추정하면 과소평가합니다. **출력 토큰이 3.5배**로 가장 크게 늘고,
-그 절반가량이 검토기가 쓰는 **검토문**입니다(턴당 941 토큰). 최적화 여지가 명확한 지점입니다.
+그 절반가량이 검토기가 쓰는 **검토문**이었습니다(턴당 941 토큰).
+
+검토 출력을 JSON으로 구조화해 **턴당 540 → 70 토큰**으로 줄였습니다. 그런데
+**총비용은 1.22배 늘었습니다** — 검토가 실제로 반려를 하기 시작해 재생성이 돌았기
+때문입니다. 그 재생성이 막은 것이 무엇인지는 [ARCHITECTURE](ARCHITECTURE.md#12-검토문을-줄였더니-비용이-늘었다)에 있습니다.
 
 **결론**: Reflection을 유지합니다. 근거는 총점이 아니라 재현된 실패 방지입니다.
 다만 비용 2.6배·지연 2.4배는 남는 대가이며, `--no-review`로 끌 수 있습니다.
@@ -246,7 +250,7 @@ cp .env.example .env      # OPENAI_API_KEY 입력
 
 ```bash
 uv run pytest -q
-# 536 passed in 1.71s
+# 549 passed in 1.79s
 ```
 
 ### CLI 대화

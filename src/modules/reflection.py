@@ -7,8 +7,19 @@
 
 from __future__ import annotations
 
+import json
 from collections.abc import Callable
 from dataclasses import dataclass
+
+# 검토문이 이 길이를 넘으면 잘라서 재생성에 넘긴다.
+#
+# 검토기는 턴당 941 출력 토큰을 썼다 — 파이프라인에서 가장 긴 출력이고,
+# Reflection 추가 비용의 절반가량이 응답 개선이 아니라 **검토문 작성**에
+# 쓰이고 있었다. 프롬프트에 "간결하게"라고만 적혀 있고 형식이 강제되지 않아
+# 모델이 7개 기준을 하나씩 논평했기 때문이다 (TASK-09).
+#
+# 상한은 모델이 지시를 어겼을 때의 안전망이다. 실제 축소는 구조화 출력이 한다.
+MAX_FEEDBACK_CHARS = 200
 
 # ---------------------------------------------------------------------------
 # 검토 결과
@@ -21,6 +32,54 @@ class ReviewResult:
 
     approved: bool
     feedback: str = ""  # 재생성 시 전달할 피드백
+
+
+def parse_review_response(content: str) -> ReviewResult:
+    """검토 응답을 결과로 바꾼다 (순수 함수).
+
+    구조화 출력(JSON)을 먼저 시도하고, 실패하면 `PASS`/`FAIL:` 텍스트로 읽는다.
+    프로바이더가 `response_format`을 무시하는 경우가 있어 폴백이 필요하다.
+    폴백이 없으면 그때 검토가 전부 FAIL로 뒤집혀 재생성이 매 턴 돌게 된다.
+    """
+    text = (content or "").strip()
+    if not text:
+        return ReviewResult(approved=False, feedback="검토 응답이 비어 있음")
+
+    verdict, feedback = _from_json(text)
+    if verdict is None:
+        verdict, feedback = _from_text(text)
+
+    if verdict == "PASS":
+        return ReviewResult(approved=True)
+    return ReviewResult(approved=False, feedback=feedback[:MAX_FEEDBACK_CHARS].strip())
+
+
+def _from_json(text: str) -> tuple[str | None, str]:
+    """구조화 출력에서 판정과 피드백을 읽는다. 형식이 아니면 (None, "")."""
+    try:
+        data = json.loads(text)
+    except (json.JSONDecodeError, ValueError):
+        return None, ""
+
+    if not isinstance(data, dict) or "verdict" not in data:
+        return None, ""
+
+    verdict = str(data.get("verdict", "")).strip().upper()
+    if verdict not in {"PASS", "FAIL"}:
+        return None, ""
+
+    return verdict, str(data.get("feedback", "") or "").strip()
+
+
+def _from_text(text: str) -> tuple[str, str]:
+    """`PASS` / `FAIL: <이유>` 텍스트에서 읽는다 (구형 폴백)."""
+    if text.upper().startswith("PASS"):
+        return "PASS", ""
+
+    feedback = text
+    if text.upper().startswith("FAIL"):
+        feedback = text[4:].lstrip(":").strip()
+    return "FAIL", feedback
 
 
 # ---------------------------------------------------------------------------
@@ -138,9 +197,17 @@ class ReflectionReviewer:
         )
         parts.append("")
         parts.append("## 출력 형식")
-        parts.append("검토 결과를 다음 형식으로 출력하세요:")
-        parts.append("- PASS: 응답이 모든 기준을 충족합니다.")
-        parts.append("- FAIL: <이유> — 위반한 기준 번호와 구체적인 개선 방향을 설명하세요.")
+        parts.append("아래 JSON 객체만 출력하세요. 다른 설명·분석·머리말을 붙이지 마세요.")
+        parts.append("")
+        parts.append('{"verdict": "PASS" 또는 "FAIL", "feedback": "<개선 방향>"}')
+        parts.append("")
+        parts.append("- PASS면 feedback은 빈 문자열로 두세요.")
+        parts.append(
+            "- FAIL이면 feedback에 **위반한 기준 번호와 무엇을 어떻게 고칠지**를 적으세요."
+        )
+        parts.append("  재생성은 이 문장만 보고 이뤄지므로 방향이 없으면 고칠 수 없습니다.")
+        parts.append("- feedback은 한 문장, 80자 이내로 쓰세요.")
+        parts.append("- 기준을 하나씩 논평하지 마세요. 위반한 것만 적습니다.")
 
         return "\n".join(parts)
 
@@ -154,29 +221,23 @@ class ReflectionReviewer:
             messages=[
                 {
                     "role": "system",
-                    "content": "당신은 캐릭터 응답 품질 검토자입니다. 간결하게 답변하세요.",
+                    "content": (
+                        "당신은 캐릭터 응답 품질 검토자입니다. "
+                        "지정된 JSON 객체만 출력하고, 분석 과정을 쓰지 마세요."
+                    ),
                 },
                 {"role": "user", "content": review_prompt},
             ],
             tools=[],
             use_stream=False,
             mute=True,
+            response_format={"type": "json_object"},
         )
 
-        response = result.content.strip()
+        response = (result.content or "").strip()
         self._log(f"검토 결과: {response}")
 
-        if response.startswith("PASS"):
-            return ReviewResult(approved=True)
-
-        # FAIL인 경우 피드백 추출
-        feedback = response
-        if response.startswith("FAIL"):
-            feedback = response[4:].strip()
-            if feedback.startswith(":"):
-                feedback = feedback[1:].strip()
-
-        return ReviewResult(approved=False, feedback=feedback)
+        return parse_review_response(response)
 
     def review_and_improve(
         self,
