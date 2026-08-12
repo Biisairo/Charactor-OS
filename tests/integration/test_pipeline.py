@@ -136,8 +136,16 @@ class TestClientCalled:
         mock_client.next_response = MockResponse(content="대답")
         cos.chat("안녕")
 
-        # Stage 2 (chat 응답)의 call_llm에서 시스템 프롬프트를 확인
-        chat_calls = [c for c in mock_client.all_call_records if c["use_stream"]]
+        # Stage 2 (chat 응답)의 call_llm에서 시스템 프롬프트를 확인.
+        # 응답 생성만 페르소나 시스템 프롬프트를 싣는다 (감정·기억은 분석기 프롬프트).
+        chat_calls = [
+            c
+            for c in mock_client.all_call_records
+            if any(
+                m.get("role") == "system" and "홍길동" in str(m.get("content", ""))
+                for m in c["messages"]
+            )
+        ]
         assert len(chat_calls) >= 1
         system_msgs = [m for m in chat_calls[0]["messages"] if m.get("role") == "system"]
         assert len(system_msgs) >= 1

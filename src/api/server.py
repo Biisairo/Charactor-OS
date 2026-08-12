@@ -1,8 +1,10 @@
-"""Character OS — FastAPI REST + WebSocket 서버.
+"""Character OS — FastAPI REST 서버.
+
+대화 경로는 `POST /chat` 하나다. 스트리밍(WebSocket) 경로는 제거했다 —
+검토를 거치지 않은 초안이 사용자에게 도달하는 통로였다 (TASK-11).
 
 엔드포인트:
-    POST  /chat                대화 (동기, 전체 응답)
-    WS    /ws/chat             대화 (스트리밍, 토큰 단위)
+    POST  /chat                대화 (전체 응답, 실패 시 502)
     GET   /health              헬스체크
     GET   /emotion             감정 상태 조회
     GET   /memory/stats        기억 통계
@@ -34,7 +36,7 @@ from pathlib import Path
 from queue import Empty, Queue
 
 import yaml
-from fastapi import FastAPI, HTTPException, WebSocket, WebSocketDisconnect
+from fastapi import FastAPI, HTTPException
 from fastapi.responses import FileResponse
 from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel
@@ -208,7 +210,7 @@ async def _run_in_worker(fn: Callable) -> any:
 
 app = FastAPI(
     title="Character OS API",
-    description="캐릭터 대화 REST + WebSocket API",
+    description="캐릭터 대화 REST API",
     version="0.2.0",
     lifespan=lifespan,
 )
@@ -280,7 +282,16 @@ async def chat(req: ChatRequest):
         emotion = cos.emotion.get_state()
         return ChatResponse(response=response, emotion=emotion)
 
-    return await _run_in_worker(_do_chat)
+    result = await _run_in_worker(_do_chat)
+
+    # chat()은 턴이 실패하면 None을 돌려준다 (프로바이더 거부, Stage 실패 등).
+    # 캐릭터 발화가 아니므로 200으로 내보내지 않는다 — 실패는 실패로 드러나야 한다.
+    if result.response is None:
+        raise HTTPException(
+            status_code=502, detail="응답 생성에 실패했습니다. 잠시 후 다시 시도해 주세요."
+        )
+
+    return result
 
 
 @app.get("/api/emotion")
@@ -771,57 +782,6 @@ def search_fewshot(q: str = ""):
             for e in results
         ]
     }
-
-
-@app.websocket("/api/ws/chat")
-async def ws_chat(ws: WebSocket):
-    """스트리밍 대화 — 워커 스레드에서 처리, 토큰 단위 전송.
-
-    프로토콜:
-        클라이언트 → 서버: 텍스트 프레임 (메시지)
-        서버 → 클라이언트: 텍스트 프레임 (토큰들) + "[DONE]"
-    """
-    await ws.accept()
-    cos = _get_cos()
-
-    try:
-        while True:
-            user_input = await ws.receive_text()
-
-            # 워커 스레드에서 스트리밍 실행, 토큰을 큐로 전달
-            token_queue: Queue = Queue()
-
-            # 기본 인자로 루프 변수를 명시적으로 바인딩한다 (늦은 바인딩 방지)
-            def _stream(user_input=user_input, token_queue=token_queue):
-                try:
-                    for token in cos.chat_stream(user_input):
-                        token_queue.put(token)
-                except Exception as e:
-                    token_queue.put(e)
-                finally:
-                    token_queue.put(None)  # sentinel
-
-            # 워커에 제출 (순차 보장, fire-and-forget)
-            _worker.submit(_stream)
-
-            # 토큰을 비동기적으로 읽어서 전송
-            while True:
-                try:
-                    item = await asyncio.get_event_loop().run_in_executor(
-                        None, lambda q=token_queue: q.get(timeout=30)
-                    )
-                except Empty:
-                    break
-
-                if item is None:  # 스트림 종료
-                    break
-                if isinstance(item, Exception):
-                    raise item
-                await ws.send_text(item)
-
-            await ws.send_text("[DONE]")
-    except WebSocketDisconnect:
-        pass
 
 
 # ---------------------------------------------------------------------------

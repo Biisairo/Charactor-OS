@@ -1,10 +1,8 @@
 import concurrent.futures
 import json
-import queue
-import threading
 import time
 import uuid
-from collections.abc import Callable, Generator
+from collections.abc import Callable
 from dataclasses import dataclass
 from pathlib import Path
 
@@ -23,6 +21,20 @@ from src.modules import (
 from src.pricing import estimate_cost, load_price_table
 from src.prompts.engine import PromptEngine
 from src.trace import PipelineTrace
+from src.validity import provider_error_reason
+
+# 프로바이더가 거부를 돌려줬을 때 응답 생성을 다시 시도하는 횟수 (최초 호출 포함).
+# 거부는 결정론적이지 않아 재시도로 통과하는 경우가 많다. 평가 하네스도 같은 값을 쓴다.
+MAX_RESPONSE_ATTEMPTS = 3
+
+
+class ProviderRefusalError(RuntimeError):
+    """프로바이더가 재시도 후에도 요청을 거부했다.
+
+    캐릭터 발화가 아니므로 사용자에게 응답으로 보여주거나 상태에 저장하지 않는다.
+    캐릭터 톤의 대체 문장으로 감추지 않는다 — 인프라 장애를 캐릭터 반응으로
+    위장하는 것은 은폐다 (TASK-11 3.11.5).
+    """
 
 
 # ANSI 색상 코드
@@ -317,19 +329,35 @@ class CharacterOS:
         self._log(f"사용자 입력: {user_input}", module="response")
 
         def _call_llm(extra_user_msg: str | None = None) -> str:
+            """응답을 한 번 생성한다. 프로바이더 거부는 재시도하고, 지속되면 예외를 던진다.
+
+            초안과 재생성이 모두 이 함수를 지나므로, 여기 한 곳에서 막으면
+            Stage 2를 빠져나가는 모든 경로가 덮인다.
+            """
             messages = [
                 {"role": "system", "content": system_prompt},
                 {"role": "user", "content": user_input},
             ]
             if extra_user_msg:
                 messages.append({"role": "user", "content": extra_user_msg})
-            result = self._meter.wrap(self.client, "response").call_llm(
-                messages=messages,
-                tools=[],
-                use_stream=True,
-                mute=True,
-            )
-            return result.content
+
+            reason = None
+            for attempt in range(MAX_RESPONSE_ATTEMPTS):
+                result = self._meter.wrap(self.client, "response").call_llm(
+                    messages=messages,
+                    tools=[],
+                    use_stream=False,
+                    mute=True,
+                )
+                reason = provider_error_reason(result.content)
+                if reason is None:
+                    return result.content
+                self._log(
+                    f"프로바이더 거부 ({attempt + 1}/{MAX_RESPONSE_ATTEMPTS}): {reason}",
+                    module="response",
+                )
+
+            raise ProviderRefusalError(reason or "프로바이더 거부")
 
         # 초안 생성
         self._log("LLM 호출 시작 (초안)...", module="response")
@@ -357,103 +385,6 @@ class CharacterOS:
         self._log("-" * 40, module="response")
 
         return response
-
-    def _generate_response_streaming(
-        self, user_input: str, context: ContextBundle, token_callback: Callable[[str], None]
-    ) -> str:
-        """Stage 2 (스트리밍): 토큰 콜백과 함께 응답 생성."""
-        self._log("")
-        self._log("-" * 40, module="response")
-        self._log("Stage 2: 응답 생성 시작 (스트리밍)", module="response")
-        self._log("-" * 40, module="response")
-
-        system_prompt = self.prompt_engine.assemble_system_prompt(
-            user_input=user_input,
-            persona=self.persona,
-            emotion=self.emotion,
-            memory=self.memory,
-            knowledge=self.knowledge,
-            history=self.history,
-            fewshot=self.fewshot,
-        )
-
-        self._log("[시스템 프롬프트]", module="response")
-        self._log(system_prompt, module="response")
-        self._log(f"[사용자 입력] {user_input}", module="response")
-        self._log("LLM 호출 시작...", module="response")
-
-        result = self._meter.wrap(self.client, "response").call_llm(
-            messages=[
-                {"role": "system", "content": system_prompt},
-                {"role": "user", "content": user_input},
-            ],
-            tools=[],
-            use_stream=True,
-            mute=True,
-            token_callback=token_callback,
-        )
-
-        self._log(f"LLM 응답 완료 ({len(result.content)}자)", module="response")
-        self._log(f"[응답] {result.content}", module="response")
-        self._log("-" * 40, module="response")
-        self._log("Stage 2: 응답 생성 완료", module="response")
-        self._log("-" * 40, module="response")
-
-        return result.content
-
-    def chat_stream(self, user_input: str) -> Generator[str, None, None]:
-        """스트리밍 3-stage 파이프라인. 토큰 단위로 yield.
-
-        사용법:
-            for token in cos.chat_stream("안녕"):
-                print(token, end="", flush=True)
-        """
-        self._turn_id = uuid.uuid4().hex[:12]
-        self._meter.reset()  # 계측은 턴 단위
-
-        # Stage 1: 컨텍스트 수집
-        try:
-            context = self._gather_context(user_input)
-        except Exception as e:
-            self._log(f"Stage 1 실패: {e}", module="orchestrator")
-            return
-
-        # Stage 2: 토큰 스트리밍 (스레드 + 큐 bridging)
-        token_queue: queue.Queue[str | None | Exception] = queue.Queue()
-
-        def on_token(token: str) -> None:
-            token_queue.put(token)
-
-        def llm_worker() -> None:
-            try:
-                full_response = self._generate_response_streaming(user_input, context, on_token)
-                token_queue.put(("__done__", full_response))
-            except Exception as e:
-                token_queue.put(e)
-
-        thread = threading.Thread(target=llm_worker, daemon=True)
-        thread.start()
-
-        # 토큰 yield
-        full_response = ""
-        while True:
-            item = token_queue.get()
-            if isinstance(item, Exception):
-                raise item
-            if isinstance(item, tuple) and item[0] == "__done__":
-                full_response = item[1]
-                break
-            if item is not None:
-                full_response += item
-                yield item
-
-        thread.join()
-
-        # Stage 3: 후처리
-        try:
-            self._post_process(user_input, full_response)
-        except Exception as e:
-            self._log(f"Stage 3 실패, 롤백 완료: {e}", module="orchestrator")
 
     def _post_process(self, user_input: str, response: str) -> None:
         """Stage 3: Post-processing — 상태 업데이트 (병렬, 롤백 지원)."""

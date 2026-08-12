@@ -8,7 +8,7 @@ from __future__ import annotations
 
 import pytest
 
-from eval.validity import provider_error_reason
+from src.validity import provider_error_reason
 
 
 class TestDetectsProviderErrors:

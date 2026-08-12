@@ -2,7 +2,7 @@
 
 [![CI](https://github.com/Biisairo/Charactor-OS/actions/workflows/ci.yml/badge.svg)](https://github.com/Biisairo/Charactor-OS/actions/workflows/ci.yml)
 ![Python](https://img.shields.io/badge/python-3.10%2B-blue)
-![Tests](https://img.shields.io/badge/tests-412%20passing-brightgreen)
+![Tests](https://img.shields.io/badge/tests-418%20passing-brightgreen)
 
 > 감정·기억·지식을 가진 캐릭터가 일관된 인격으로 대화하는 **LLM 에이전트 런타임**.
 >
@@ -93,9 +93,10 @@ LLM 캐릭터 챗봇의 어려움은 모델 호출이 아니라 **상태 관리�
 | LLM이 캐릭터 말투를 이탈한다 | **Reflection 패턴** — 초안을 스스로 검토하고 재생성. 상한 2회로 비용·지연 제한 |
 | 후처리 중 실패하면 상태가 깨진다 | **스냅샷 기반 롤백** — 감정·기억·히스토리를 원자적으로 되돌린 뒤 예외 전파 |
 | 에이전트가 왜 그렇게 답했는지 알 수 없다 | **PipelineTrace** — Stage별 소요 시간·토큰·모듈 기여도 기록, `GET /api/trace/last` |
-| LLM 호출 없이는 테스트가 불가능하다 | **클라이언트 의존성 주입** — API 키 없이 412개 테스트가 3초 내 완주 |
+| LLM 호출 없이는 테스트가 불가능하다 | **클라이언트 의존성 주입** — API 키 없이 418개 테스트가 3초 내 완주 |
 | 개선했다는 걸 어떻게 아는가 | **평가 하네스** — 골든 데이터셋 20건 × LLM-as-judge 3축 채점 |
 | 운영 중 무슨 일이 있었는지 알 수 없다 | **LLM 호출 운영 로그** — 프롬프트·응답 원문 + 토큰·비용을 비동기 append |
+| 프로바이더 거부가 캐릭터 발화로 위장된다 | **거부 판별 후 재시도** — 지속되면 오류로 명시. 상태에 저장하지 않아 이후 턴이 오염되지 않음 |
 
 ---
 
@@ -164,6 +165,10 @@ Reflection과 강화된 검토 기준이 **함께 있을 때만** 해결됩니�
 
 부수 효과로 **프로바이더 콘텐츠 필터 거부를 복구**합니다 — off는 3회 재시도해도
 실패한 사례를 on은 전부 정상 처리했습니다(2회 실행 모두).
+
+> 다만 이는 Reflection의 **우연한** 이득이었습니다. 검토기가 거부 문자열을 보고
+> FAIL을 주어 재생성이 걸렸을 뿐, 거부를 판별하는 코드는 없었습니다.
+> 지금은 거부 판별이 명시적 단계로 들어가 `--no-review`에서도 동작합니다.
 
 > 전체 분석: [ARCHITECTURE.md](ARCHITECTURE.md#5-reflection--자기-검토-루프)
 > 원본 데이터: [`eval/results/`](eval/results/)
@@ -239,7 +244,7 @@ cp .env.example .env      # OPENAI_API_KEY 입력
 
 ```bash
 uv run pytest -q
-# 412 passed in 1.35s
+# 418 passed in 1.47s
 ```
 
 ### CLI 대화
@@ -308,7 +313,7 @@ uv run python main.py --character characters/my-character
 | 임베딩 | sentence-transformers (all-MiniLM-L6-v2) | 로컬 실행, 외부 호출 0 |
 | 벡터 검색 | numpy dot product | 기억 규모(수백 건)에 벡터 DB는 과설계 |
 | 영속화 | SQLite (기억) / JSON (감정·대화) | 의존성 없이 단일 파일로 재현 가능 |
-| API | FastAPI + WebSocket | 토큰 단위 스트리밍 |
+| API | FastAPI (REST) | 대화 경로 단일화 — 검토를 우회하는 통로를 두지 않음 |
 | 프론트엔드 | React 19 + Tailwind 4 + shadcn/ui | — |
 | 품질 | pytest · ruff · GitHub Actions | — |
 
@@ -323,11 +328,11 @@ src/
 ├── prompts/engine.py     # 토큰 예산 기반 프롬프트 조립
 ├── modules/              # 6개 캐릭터 모듈 + Reflection
 ├── llm/                  # LLM 클라이언트 (API / 로컬)
-└── api/server.py         # FastAPI REST + WebSocket
+└── api/server.py         # FastAPI REST
 
 tests/
 ├── unit/                 # 모듈 · 경로 안전성 · 워커 동시성 · 평가 로직
-└── integration/          # 파이프라인 · 롤백 · 스트리밍 · API
+└── integration/          # 파이프라인 · 롤백 · 경로 단일화 · 거부 차단 · API
 
 eval/                     # 응답 품질 평가 하네스 (수동 실행, API 키 필요)
 ├── datasets/             # 골든 데이터셋

@@ -169,7 +169,7 @@ charactor_os/
 | 임베딩 | sentence-transformers (all-MiniLM-L6-v2) |
 | 영속화 | SQLite (기억), JSON (감정, 대화) |
 | 프롬프트 | PromptEngine (동적 조립) |
-| API | FastAPI + WebSocket |
+| API | FastAPI (REST) |
 | 프론트엔드 | React + Tailwind + shadcn/ui |
 
 ## 8. 검증 기준

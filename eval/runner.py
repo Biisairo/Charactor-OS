@@ -11,8 +11,8 @@ from pathlib import Path
 
 from eval.dataset import GoldenCase, GoldenDataset
 from eval.scoring import CaseScore, Summary, aggregate
-from eval.validity import provider_error_reason
 from src.character_os import CharacterOS
+from src.validity import provider_error_reason
 
 RESULTS_DIR = Path(__file__).parent / "results"
 

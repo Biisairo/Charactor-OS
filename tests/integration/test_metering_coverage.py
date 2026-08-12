@@ -54,14 +54,6 @@ class TestEveryCallIsMetered:
             "계측되지 않은 LLM 호출이 있다 — 새 호출 지점을 _meter.wrap()으로 감쌌는지 확인하라"
         )
 
-    def test_chat_stream_covers_all_calls(self, character_dir: Path, tmp_path: Path):
-        client = CountingClient()
-        cos = make_character_os(character_dir, tmp_path, client)
-
-        list(cos.chat_stream("안녕하시오"))
-
-        assert cos._meter.summary()["calls"] == client.raw_calls
-
     def test_memory_conflict_check_is_metered(self, character_dir: Path, tmp_path: Path):
         """기억 충돌 판정은 조건부 호출이라 누락되기 쉽다."""
         client = CountingClient()

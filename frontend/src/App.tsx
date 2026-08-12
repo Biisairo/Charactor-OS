@@ -126,6 +126,9 @@ const STAGE_LABELS: Record<string, string> = {
 
 const ERROR_KEYWORDS = ["실패", "오류", "error", "FAIL"];
 
+// 응답을 기다리는 동안 자리를 잡아두는 assistant 메시지의 ID
+const PENDING_ID = "pending";
+
 const LOG_COLORS: { pattern: RegExp; cls: string }[] = [
   { pattern: /실패|오류|error|FAIL/i, cls: "text-red-400" },
   { pattern: /\[Orchestrator\]/, cls: "text-blue-400" },
@@ -208,13 +211,13 @@ function stripAnsi(str: string): string {
 
 function ChatMessage({
   message,
-  isStreaming,
+  isSending,
 }: {
   message: Message;
-  isStreaming: boolean;
+  isSending: boolean;
 }) {
   const isUser = message.role === "user";
-  const isLoading = isStreaming && message.id === "streaming" && !message.content;
+  const isLoading = isSending && message.id === PENDING_ID && !message.content;
 
   return (
     <div className={`flex ${isUser ? "justify-end" : "justify-start"} mb-4`}>
@@ -1069,7 +1072,7 @@ export default function App() {
   const { dark, setDark } = useDarkMode();
   const [messages, setMessages] = useState<Message[]>([]);
   const [input, setInput] = useState("");
-  const [isStreaming, setIsStreaming] = useState(false);
+  const [isSending, setIsSending] = useState(false);
   const [emotion, setEmotion] = useState<EmotionState | null>(null);
   const [memoryStats, setMemoryStats] = useState<{ count: number } | null>(null);
   const [memories, setMemories] = useState<MemoryEntry[]>([]);
@@ -1091,11 +1094,8 @@ export default function App() {
   const [newName, setNewName] = useState("");
   const [newIdentity, setNewIdentity] = useState("");
 
-  const wsRef = useRef<WebSocket | null>(null);
   const scrollRef = useRef<HTMLDivElement>(null);
   const logScrollRef = useRef<HTMLDivElement>(null);
-  const streamingMessageRef = useRef<string>("");
-  const streamingLogCountRef = useRef<number>(0);
   const inputRef = useRef<HTMLInputElement>(null);
 
   // Auto-scroll chat
@@ -1216,79 +1216,18 @@ export default function App() {
     return () => clearInterval(interval);
   }, [debugEnabled, fetchLogs]);
 
-  // WebSocket
-  const connectWs = useCallback(() => {
-    if (wsRef.current?.readyState === WebSocket.OPEN) return;
-
-    const wsUrl =
-      (API_BASE || window.location.origin).replace(/^http/, "ws") +
-      "/api/ws/chat";
-    const ws = new WebSocket(wsUrl);
-
-    ws.onmessage = (event) => {
-      const data = event.data;
-      if (data === "[DONE]") {
-        setIsStreaming(false);
-        const logStart = streamingLogCountRef.current;
-        apiGet<{ logs: string[] }>("/api/debug").then((debugData) => {
-          const newLogs = debugData.logs.slice(logStart);
-          setMessages((prev) => {
-            const last = prev[prev.length - 1];
-            if (last && last.role === "assistant" && last.id === "streaming") {
-              return [
-                ...prev.slice(0, -1),
-                { ...last, debugLogs: newLogs },
-              ];
-            }
-            return prev;
-          });
-        });
-        refreshPerformance();
-        fetchLogs();
-        return;
-      }
-
-      streamingMessageRef.current += data;
-      setMessages((prev) => {
-        const last = prev[prev.length - 1];
-        if (last && last.role === "assistant" && last.id === "streaming") {
-          return [
-            ...prev.slice(0, -1),
-            { ...last, content: streamingMessageRef.current },
-          ];
-        }
-        return [
-          ...prev,
-          {
-            id: "streaming",
-            role: "assistant",
-            content: streamingMessageRef.current,
-            timestamp: new Date(),
-          },
-        ];
-      });
-    };
-
-    ws.onclose = () => {
-      wsRef.current = null;
-    };
-
-    ws.onerror = () => {
-      setIsStreaming(false);
-      setError("WebSocket 연결 오류");
-    };
-
-    wsRef.current = ws;
-  }, [refreshPerformance, fetchLogs]);
-
   // Send message
-  const sendMessage = useCallback(() => {
+  //
+  // 대화 경로는 POST /api/chat 하나다. 이전에는 WebSocket으로 토큰을 받아
+  // 점진 렌더했으나, 그 경로에는 Reflection 검토가 없어 검토를 거치지 않은
+  // 초안이 사용자에게 도달했다. 스트리밍이 흘려보내는 것은 확정 응답이 아니라
+  // 검토기가 반려할지 모르는 초안이므로 둘은 양립하지 않는다 (TASK-11).
+  const sendMessage = useCallback(async () => {
     const currentInput = inputRef.current?.value || input;
-    if (!currentInput.trim() || isStreaming) return;
+    if (!currentInput.trim() || isSending) return;
 
-    apiGet<{ logs: string[] }>("/api/debug").then((debugData) => {
-      streamingLogCountRef.current = debugData.logs.length;
-    });
+    const debugData = await apiGet<{ logs: string[] }>("/api/debug").catch(() => null);
+    const logStart = debugData?.logs.length ?? 0;
 
     setMessages((prev) => [
       ...prev,
@@ -1298,21 +1237,44 @@ export default function App() {
         content: currentInput,
         timestamp: new Date(),
       },
+      // 응답을 기다리는 동안 자리를 잡아두는 빈 메시지 (로딩 표시용)
+      {
+        id: PENDING_ID,
+        role: "assistant",
+        content: "",
+        timestamp: new Date(),
+      },
     ]);
     setInput("");
+    setIsSending(true);
+    setError(null);
 
-    connectWs();
-    const sendWhenReady = () => {
-      if (wsRef.current?.readyState === WebSocket.OPEN) {
-        streamingMessageRef.current = "";
-        setIsStreaming(true);
-        wsRef.current.send(currentInput);
-      } else {
-        setTimeout(sendWhenReady, 100);
-      }
-    };
-    sendWhenReady();
-  }, [input, isStreaming, connectWs]);
+    try {
+      const data = await apiPost<{ response: string; emotion: Record<string, number> }>(
+        "/api/chat",
+        { message: currentInput },
+      );
+      const newLogs = await apiGet<{ logs: string[] }>("/api/debug")
+        .then((d) => d.logs.slice(logStart))
+        .catch(() => []);
+
+      setMessages((prev) =>
+        prev.map((m) =>
+          m.id === PENDING_ID
+            ? { ...m, id: `${Date.now()}-a`, content: data.response, debugLogs: newLogs }
+            : m,
+        ),
+      );
+    } catch {
+      // 실패한 턴은 캐릭터 발화가 아니다. 자리표시 메시지를 지우고 오류로 알린다.
+      setMessages((prev) => prev.filter((m) => m.id !== PENDING_ID));
+      setError("응답 생성에 실패했습니다. 잠시 후 다시 시도해 주세요.");
+    } finally {
+      setIsSending(false);
+      refreshPerformance();
+      fetchLogs();
+    }
+  }, [input, isSending, refreshPerformance, fetchLogs]);
 
   // Export chat
   const exportChat = useCallback(() => {
@@ -1691,7 +1653,7 @@ export default function App() {
             </div>
           ) : (
             messages.map((msg) => (
-              <ChatMessage key={msg.id} message={msg} isStreaming={isStreaming} />
+              <ChatMessage key={msg.id} message={msg} isSending={isSending} />
             ))
           )}
         </div>
@@ -1709,12 +1671,12 @@ export default function App() {
                   sendMessage();
                 }
               }}
-              placeholder={isStreaming ? "응답을 기다리는 중..." : "메시지를 입력하세요..."}
-              disabled={isStreaming}
-              className={`flex-1 ${isStreaming ? "opacity-60" : ""}`}
+              placeholder={isSending ? "응답을 기다리는 중..." : "메시지를 입력하세요..."}
+              disabled={isSending}
+              className={`flex-1 ${isSending ? "opacity-60" : ""}`}
             />
-            <Button onClick={sendMessage} disabled={isStreaming} className="min-w-[70px]">
-              {isStreaming ? (
+            <Button onClick={sendMessage} disabled={isSending} className="min-w-[70px]">
+              {isSending ? (
                 <div className="flex items-center gap-1.5">
                   <div className="w-1.5 h-1.5 bg-current rounded-full animate-bounce [animation-delay:-0.3s]" />
                   <div className="w-1.5 h-1.5 bg-current rounded-full animate-bounce [animation-delay:-0.15s]" />
@@ -1725,7 +1687,7 @@ export default function App() {
               )}
             </Button>
           </div>
-          {isStreaming && (
+          {isSending && (
             <p className="text-xs text-muted-foreground text-center mt-2 animate-pulse">
               캐릭터가 응답을 생성하고 있습니다...
             </p>
