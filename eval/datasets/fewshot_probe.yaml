@@ -1,0 +1,141 @@
+description: >
+  few-shot 검색 정밀도 측정용 질의 집합 (TASK-15 / REQ-15-2, 15-4).
+
+  `expected_tag`가 그 질의에 맞는 예시 그룹이다. 검색 결과가 그 그룹에서
+  나왔는지로 정밀도를 잰다.
+
+  `expected_tag: null` 은 **어떤 예시도 적절하지 않은 질의**다. 현재 구현은
+  점수가 0이 아니면 무조건 무언가를 반환하므로 이 항목들이 전부 오답이 된다.
+  REQ-15-3이 겨냥하는 지점이다.
+
+  band 는 질의가 어느 영역에 있는지를 표시한다.
+    in-vocab      TAG_KEYWORDS(38단어) 안의 일상 어휘
+    domain        캐릭터 고유 어휘 — 태그 어휘 밖
+    unrelated     어떤 예시도 맞지 않음
+
+cases:
+  # -------------------------------------------------------------------------
+  # 홍길동
+  # -------------------------------------------------------------------------
+  - character: hong-gil-dong
+    query: 안녕!
+    expected_tag: 인사
+    band: in-vocab
+
+  - character: hong-gil-dong
+    query: 요즘 너무 힘들어
+    expected_tag: 위로
+    band: in-vocab
+
+  - character: hong-gil-dong
+    query: 친구랑 싸웠어
+    expected_tag: 위로
+    band: in-vocab
+
+  - character: hong-gil-dong
+    query: 오늘 뭐해?
+    expected_tag: 일상
+    band: in-vocab
+
+  - character: hong-gil-dong
+    query: ㅋㅋㅋ 진짜 웃겨
+    expected_tag: 유머
+    band: in-vocab
+
+  - character: hong-gil-dong
+    query: 양반들이 너무하오
+    expected_tag: 갈등
+    band: domain
+
+  - character: hong-gil-dong
+    query: 관군이 쫓아온다던데
+    expected_tag: 갈등
+    band: domain
+
+  - character: hong-gil-dong
+    query: 어머니는 안녕하신가
+    expected_tag: 인사
+    band: domain
+
+  - character: hong-gil-dong
+    query: 오늘은 산에서 무얼 하며 지냈소?
+    expected_tag: 일상
+    band: domain
+
+  - character: hong-gil-dong
+    query: 서자라 과거를 못 본다니 억울하오
+    expected_tag: 위로
+    band: domain
+
+  - character: hong-gil-dong
+    query: 광합성의 원리를 설명해줘
+    expected_tag: null
+    band: unrelated
+
+  - character: hong-gil-dong
+    query: 분기별 매출 보고서 양식 알려줘
+    expected_tag: null
+    band: unrelated
+
+  # -------------------------------------------------------------------------
+  # 소민찌
+  # -------------------------------------------------------------------------
+  - character: han-so-min
+    query: 안녕!
+    expected_tag: 인사
+    band: in-vocab
+
+  - character: han-so-min
+    query: 요즘 너무 힘들어
+    expected_tag: 위로
+    band: in-vocab
+
+  - character: han-so-min
+    query: 친구랑 싸웠어
+    expected_tag: 위로
+    band: in-vocab
+
+  - character: han-so-min
+    query: 오늘 뭐해?
+    expected_tag: 일상
+    band: in-vocab
+
+  - character: han-so-min
+    query: ㅋㅋㅋ 진짜 웃겨
+    expected_tag: 유머
+    band: in-vocab
+
+  - character: han-so-min
+    query: 악플 봤어?
+    expected_tag: 갈등
+    band: domain
+
+  - character: han-so-min
+    query: 저격 영상 올라왔던데
+    expected_tag: 갈등
+    band: domain
+
+  - character: han-so-min
+    query: 오늘 방송 몇 시야?
+    expected_tag: 일상
+    band: domain
+
+  - character: han-so-min
+    query: 도네 많이 들어왔어?
+    expected_tag: 일상
+    band: domain
+
+  - character: han-so-min
+    query: 동접 떨어져서 속상하겠다
+    expected_tag: 위로
+    band: domain
+
+  - character: han-so-min
+    query: 광합성의 원리를 설명해줘
+    expected_tag: null
+    band: unrelated
+
+  - character: han-so-min
+    query: 분기별 매출 보고서 양식 알려줘
+    expected_tag: null
+    band: unrelated

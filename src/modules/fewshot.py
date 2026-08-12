@@ -17,13 +17,41 @@ class FewShotExample:
 
 @dataclass
 class FewShotGroup:
-    """태그별 few-shot 예시 그룹."""
+    """태그별 few-shot 예시 그룹.
+
+    keywords: 이 캐릭터 고유의 트리거 어휘. 예시 파일의 `keywords:`에서 읽는다.
+        내장 `TAG_KEYWORDS`를 대체하지 않고 **더한다** (REQ-15-1).
+    """
 
     tag: str
     examples: list[FewShotExample] = field(default_factory=list)
+    keywords: list[str] = field(default_factory=list)
 
 
-# 태그 → 트리거 키워드 매핑
+# 관련성이 이보다 낮으면 예시를 넣지 않는다 (REQ-15-3).
+#
+# 넣지 않는 쪽을 택한 이유: 점수가 0만 아니면 무엇이든 반환하던 시절에는
+# "광합성의 원리를 설명해줘" 같은 질의에도 갈등 예시가 프롬프트에 들어갔다.
+# 무관한 예시는 응답 품질을 조용히 떨어뜨리며, 로그에도 지표에도 남지 않는다.
+#
+# 값은 `eval/fewshot_probe.py --sweep`의 실측에서 골랐다. 관련 질의와 무관
+# 질의의 점수 구간이 겹치는 영역이 있어 깔끔한 분리선은 없다 — 무관한 예시를
+# 넣지 않는 것을 우선한 지점이다.
+MIN_FEWSHOT_SCORE = 0.29
+
+# 트리거 어휘가 이 개수만큼 걸리면 태그 점수를 최대로 본다.
+#
+# 예전에는 `matches / len(keywords)`였다. 키워드 6개 중 1개가 걸려도 0.167에
+# 그쳐 태그 신호가 사실상 묻혔고, 무엇보다 **어휘를 추가할수록 분모가 커져
+# 점수가 떨어졌다.** 캐릭터 고유 어휘를 더하는 것(REQ-15-1)이 역효과를 내는
+# 구조였다. 매칭 개수에 포화시키면 어휘 추가가 점수를 깎지 않는다.
+#
+# 값은 실측으로 골랐다. 2로 두면 키워드 하나만 걸려도 태그 점수가 0.5가 되어
+# **같은 문장이 예시에 그대로 있는데도** 다른 태그가 이긴다 — "친구랑 싸웠어"가
+# 위로 예시에 있는데 갈등이 이겼다. 4에서 그 회귀가 사라진다.
+TAG_SATURATION = 4
+
+# 태그 → 트리거 키워드 매핑 (내장 기본값)
 TAG_KEYWORDS: dict[str, list[str]] = {
     "인사": ["안녕", "하이", "헬로", "반가워", "hello", "hi"],
     "위로": ["힘들어", "슬퍼", "우울", "망했어", "실패", "속상", "아파"],
@@ -95,7 +123,14 @@ class FewShotModule:
                     )
 
             if examples:
-                self._groups.append(FewShotGroup(tag=tag, examples=examples))
+                raw_keywords = data.get("keywords") or []
+                self._groups.append(
+                    FewShotGroup(
+                        tag=tag,
+                        examples=examples,
+                        keywords=[str(k).lower() for k in raw_keywords],
+                    )
+                )
 
         except Exception as e:
             # 조용히 넘기면 예시가 0개가 된 이유를 아무도 알 수 없다 (REQ-06-1).
@@ -107,6 +142,20 @@ class FewShotModule:
                     expected=False,
                 )
             )
+
+    def _tag_score(self, group: FewShotGroup, query_lower: str) -> float:
+        """그룹의 트리거 어휘가 질의에 얼마나 걸리는가.
+
+        내장 `TAG_KEYWORDS`와 그룹 자신의 `keywords`를 합쳐서 본다. 내장 어휘만
+        쓰면 캐릭터 고유 어휘(`도네`·`동접`·`관군`)가 태그 점수를 0으로 만들고,
+        판단이 통째로 임베딩으로 넘어간다 (REQ-15-1).
+        """
+        keywords = list(TAG_KEYWORDS.get(group.tag, [])) + group.keywords
+        if not keywords:
+            return 0.0
+
+        matches = sum(1 for kw in keywords if kw in query_lower)
+        return min(1.0, matches / TAG_SATURATION)
 
     def search(
         self,
@@ -124,18 +173,12 @@ class FewShotModule:
         emotions = emotions or {}
         query_lower = query.lower()
 
-        # 태그 키워드 매칭 점수
-        tag_scores: dict[str, float] = {}
-        for tag, keywords in TAG_KEYWORDS.items():
-            matches = sum(1 for kw in keywords if kw in query_lower)
-            tag_scores[tag] = matches / max(len(keywords), 1)
-
         # 각 example에 점수 부여
         scored: list[tuple[float, FewShotExample]] = []
 
         for group in self._groups:
-            # 태그 매칭 점수
-            tag_score = tag_scores.get(group.tag, 0.0)
+            # 태그 매칭 점수 — 내장 어휘에 캐릭터 고유 어휘를 더한다 (REQ-15-1)
+            tag_score = self._tag_score(group, query_lower)
 
             # 태그 이름이 쿼리에 직접 포함되는 경우
             if group.tag.lower() in query_lower:
@@ -183,10 +226,17 @@ class FewShotModule:
         # 점수순 정렬 → 상위 top_k
         scored.sort(key=lambda x: x[0], reverse=True)
 
-        # 점수가 0보다 큰 것만 반환
+        # 관련성이 임계값에 못 미치면 넣지 않는다 (REQ-15-3).
+        # 예전에는 `score <= 0`만 걸렀기 때문에 사실상 항상 무언가가 반환되었다.
+        #
+        # 임계값은 임베딩이 있는 점수 체계(태그 0.4 + 임베딩 0.4 + 감정 0.2)에서
+        # 보정했다. 임베딩이 없는 폴백은 태그 0.7 + 감정 0.3이라 척도가 다르고,
+        # 같은 값을 적용하면 키워드 하나만 걸리는 정상 질의까지 잘려 few-shot이
+        # 통째로 비게 된다. 폴백은 이미 퇴화한 경로이므로 더 깎지 않는다.
+        floor = MIN_FEWSHOT_SCORE if self._embedding_fn else 0.0
         results = []
         for score, example in scored[: top_k * 2]:  # 여유 있게 가져와서 중복 제거
-            if score <= 0:
+            if score <= 0 or score < floor:
                 break
             # 중복 제거 (같은 user+character)
             if not any(
