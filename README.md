@@ -13,30 +13,71 @@
 
 ## 동작 예시
 
-> 아래는 `--trace` 출력의 **형식 예시**입니다. 실제 실행 결과로 교체하세요.
+아래는 `uv run python main.py --trace` 의 **실제 실행 출력**입니다.
+앞선 턴에서 "다음 주에 시험이 있고 잠을 못 잔다", "아버지가 실망하실까 봐 무섭다"를
+이야기한 뒤의 4번째 턴입니다.
 
 ```
-사용자: 오늘 시험 완전히 망했어
+사용자: 내일 시험 보러 가는데, 나한테 응원 한마디만 해줘.
 
-[Stage 1] context gathering        12ms
-  ├ memory.search("시험")          → 1건 (score 0.61, 임계값 0.3 통과)
-  ├ fewshot.search(...)            → "위로" 태그 2건
-  └ knowledge.search_relevant(...) → 0건
+캐릭터: 홍길동은 가볍게 미소를 지으며 고개를 끄덕였다.
 
-[Stage 2] response generation     1,840ms
-  ├ prompt assembled               2,847 / 3,000 tokens
-  ├ draft                          → LLM
-  └ reflection: 말투 불일치 감지   → 1회 재생성
+"...그래, 응원이로구나."
 
-캐릭터: 아이고, 그리 상심 말게. 나도 과거엔 숱하게 무너졌네...
+흠, 넌 이미 충분히 준비했다. 그동안 잠도 못 자가며 열심히 했잖아.
+내일 시험장에 앉으면, 지금까지 네가 흘린 땀을 기억하거라.
 
-[Stage 3] post-processing           420ms
-  ├ emotion  { 연민 0.4 → 0.7 }
-  ├ memory   + "사용자가 시험을 망침"
-  └ history  + 1턴
+그리고 아버지 걱정은... 일단 내일 당장은 접어두렴.
+내일은 오직 네 자신만 믿고 힘을 내.
+
+...그리고 시험 끝나면, 한번 놀러 오거라. 어머니가 떡이라도 만들어 주실라나.
+
+── trace ── 47,012ms
+  [context] 7,600ms
+      persona_len: 389
+      knowledge_len: 658
+      emotion_len: 73
+      memory_len: 56
+      history_len: 977
+  [response] 33,165ms
+      response_len: 402
+  [postprocess] 6,247ms
+      emotion_state: {'공감': 0.5030100000000001, '염려': 0.3888, '슬픔': 0.32400000000000007}
+      memory_count: 2
+      history_count: 8
+  [LLM] 호출 6회 · 모델 mimo-v2.5
+      토큰  입력 5,668 / 출력 2,408 / 합계 8,076
+      비용  $0.001468
+      emotion     1회  in 1,353 / out 53  1,946ms
+      memory      3회  in 1,473 / out 103  4,101ms
+      reflection  1회  in 1,020 / out 1,786  24,892ms
+      response    1회  in 1,822 / out 466  8,033ms
 ```
 
-> **스크린샷 자리** — `docs/images/` 에 웹 UI 캡처를 추가하세요.
+읽는 법:
+
+- **`memory_len: 56`** — 이전 턴에서 저장된 기억이 검색되어 프롬프트에 들어갔습니다.
+  응답의 "잠도 못 자가며", "아버지 걱정은"이 그 기억에서 나옵니다.
+- **`emotion_state`** — 감정이 턴마다 감쇠합니다. 앞 턴의 `공감 0.5589`가 `0.5030`으로 줄었습니다.
+- **`reflection 1회`** — 검토를 1회 통과해 재생성이 없었습니다. 실패했다면 `response`가 2회 이상으로 늘어납니다.
+- **`memory 3회`** — 기억 추출 1회 + 기존 기억과의 충돌 판정 2회입니다.
+
+---
+
+## 웹 UI 화면
+
+![Character OS 웹 UI](docs/images/web-ui.png)
+
+오른쪽 패널이 캐릭터의 **내부 상태**를 그대로 드러냅니다 — 감정 수치와 감쇠,
+저장된 기억(가중치·접근 횟수·저장 당시 감정), Stage별 소요 시간.
+응답만 보여주는 챗봇 UI와 달리, **왜 그렇게 답했는지**를 확인할 수 있게 만든 화면입니다.
+
+<details>
+<summary>다크 모드</summary>
+
+![Character OS 웹 UI (다크 모드)](docs/images/web-ui-dark.png)
+
+</details>
 
 ---
 
@@ -210,19 +251,7 @@ uv run python main.py --no-review   # Reflection 비활성화 (비용 절감)
 uv run python main.py --debug       # 모듈별 상세 로그
 ```
 
-`--trace` 출력 예시:
-
-```
-── trace ── 14,016ms
-  [context] 12ms  [response] 9,840ms  [postprocess] 4,164ms
-  [LLM] 호출 5회 · 모델 mimo-v2.5
-      토큰  입력 4,268 / 출력 1,844 / 합계 6,112
-      비용  $0.001114
-      response    1.6회  in 1,866 / out 866
-      reflection  1.6회  in 1,428 / out 941
-      emotion     1.0회  in   527 / out  28
-      memory      1.0회  in   448 / out   9
-```
+`--trace` 출력은 위 [동작 예시](#동작-예시)를 참고하세요.
 
 ### 운영 로그
 
