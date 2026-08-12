@@ -256,6 +256,9 @@ uv run pytest -q
 # 549 passed in 1.79s
 ```
 
+> 실행·테스트·평가·API 등 **쓸 수 있는 명령은 [docs/COMMANDS.md](docs/COMMANDS.md)**에
+> 모아 두었습니다. 항목마다 API 키가 필요한지 표시되어 있습니다.
+
 ### CLI 대화
 
 ```bash
@@ -432,6 +435,7 @@ eval/                     # 평가 하네스 (수동 실행)
 
 spec/                     # 모듈별 설계 명세 9종
 docs/TASKS.md             # 개선 과제 명세 (IEEE 29148)
+docs/COMMANDS.md          # 명령 모음
 frontend/                 # React 웹 UI
 characters/<id>/
 ├── static/               # 사람이 쓴 정체성 (git 추적)
