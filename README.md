@@ -99,6 +99,9 @@ LLM 캐릭터 챗봇의 어려움은 모델 호출이 아니라 **상태 관리�
 | 프로바이더 거부가 캐릭터 발화로 위장된다 | **거부 판별 후 재시도** — 지속되면 오류로 명시. 상태에 저장하지 않아 이후 턴이 오염되지 않음 |
 | 자산 로드 실패로 품질이 원인 불명으로 떨어진다 | **로드 문제를 값으로 수집** — 의도된 폴백과 고쳐야 할 실패를 구별해 기록 |
 | 토큰 0이 거부·미상·진짜 0을 뭉갠다 | **셋을 구별해 집계** — 비용이 하한일 때만 그렇게 표시 |
+| 캐릭터를 늘리려면 코드를 고쳐야 한다 | **YAML만으로 추가** — 시대·말투·세계관이 모두 다른 2종으로 실증. 추가 커밋의 diff에 `src/` 변경 없음 |
+| 캐릭터를 바꿔도 이전 기억이 따라온다 | **캐릭터별 상태 격리** — `characters/<id>/state/`. 정적/동적 경계를 디렉토리로 강제 |
+| 무관한 예시가 프롬프트를 채운다 | **관련성 하한** — 미달이면 few-shot을 넣지 않음. 실패가 아니라 조용한 퇴화였던 지점 |
 
 ---
 
@@ -405,24 +408,34 @@ uv run python main.py --character characters/my-character
 ```
 src/
 ├── character_os.py       # 3-stage 오케스트레이터
+├── character_layout.py   # 캐릭터 디렉토리 경로의 단일 출처
 ├── trace.py              # 파이프라인 트레이싱
+├── metrics.py            # 호출·토큰 계측 (클라이언트 래핑)
+├── call_log.py           # LLM 호출 운영 로그 (비동기·회전)
+├── validity.py           # 프로바이더 거부 판별
+├── pricing.py            # 단가표 로드·비용 추정
 ├── prompts/engine.py     # 토큰 예산 기반 프롬프트 조립
+├── analysis/             # LLM 상호작용 층 (프롬프트·호출·파싱)
 ├── modules/              # 6개 캐릭터 모듈 + Reflection
 ├── llm/                  # LLM 클라이언트 (API / 로컬)
-└── api/server.py         # FastAPI REST
+└── api/                  # FastAPI — server(조립) · deps · worker · routers/
 
 tests/
 ├── unit/                 # 모듈 · 경로 안전성 · 워커 동시성 · 평가 로직
-└── integration/          # 파이프라인 · 롤백 · 경로 단일화 · 거부 차단 · API
+└── integration/          # 파이프라인 · 롤백 · 경로 단일화 · 거부 차단 · 상태 격리 · API
 
-eval/                     # 응답 품질 평가 하네스 (수동 실행, API 키 필요)
-├── datasets/             # 골든 데이터셋
+eval/                     # 평가 하네스 (수동 실행)
+├── run.py                # 응답 품질 — LLM-as-judge (API 키 필요)
+├── fewshot_probe.py      # few-shot 검색 정밀도 (API 키 불필요)
+├── datasets/             # 골든 데이터셋 · 검색 프로브
 └── results/              # 실행별 채점 결과 (JSON)
 
 spec/                     # 모듈별 설계 명세 9종
 docs/TASKS.md             # 개선 과제 명세 (IEEE 29148)
 frontend/                 # React 웹 UI
-characters/               # 캐릭터 정의 (YAML) — hong-gil-dong, han-so-min
+characters/<id>/
+├── static/               # 사람이 쓴 정체성 (git 추적)
+└── state/                # 에이전트가 쌓은 경험 (gitignore)
 ```
 
 ---
