@@ -17,7 +17,7 @@ from pathlib import Path
 
 from eval.config import EvalConfigError, load_judge_config, target_model_name
 from eval.dataset import DatasetError, load_dataset
-from eval.judge import Judge, StubJudge
+from eval.judge import Judge, StubJudge, load_character_profile
 from eval.runner import RESULTS_DIR, EvalRun, latency_stats, run_evaluation
 from eval.scoring import (
     average_across_runs,
@@ -153,7 +153,10 @@ def main(argv: list[str] | None = None) -> int:
         except EvalConfigError as exc:
             print(f"오류: {exc}", file=sys.stderr)
             return 2
-        judge = Judge(client=config.build_client())
+        judge = Judge(
+            client=config.build_client(),
+            profile=load_character_profile(character_dir),
+        )
         judge_model = config.model
         print(f"판정 모델: {judge_model} / 대상 모델: {target_model_name()}")
 

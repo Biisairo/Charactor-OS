@@ -111,6 +111,39 @@ class TestToSystemPrompt:
 
         assert "존댓말과 반말을 섞어" in prompt
 
+    def test_contains_all_speaking_style_fields(self, persona_path: str) -> None:
+        """tone·vocabulary·sentence_pattern·emojis도 프롬프트에 실린다.
+
+        summary·fillers·endings만 나가던 시절에는 말투 서술의 절반이
+        로드만 되고 버려졌다. 캐릭터마다 톤·어휘가 다른 것이 핵심인데,
+        그 차이가 프롬프트에 도달하지 않았다.
+        """
+        mod = PersonaModule(persona_path)
+        mod.load()
+        prompt = mod.to_system_prompt()
+
+        assert "차분하지만 감정이 올라올 때는 날카로워짐" in prompt  # tone
+        assert "평소에는 일상어, 화가 나면 고어체가 섞임" in prompt  # vocabulary
+        assert "짧은 문장 위주, 핵심만 말함" in prompt  # sentence_pattern
+        assert "거의 사용 안함" in prompt  # emojis
+
+    def test_omits_absent_speaking_style_fields(self, tmp_path) -> None:
+        """없는 필드는 라벨도 나가지 않는다 (빈 항목 방지)."""
+        path = tmp_path / "minimal.yaml"
+        path.write_text(
+            yaml.dump(
+                {"name": "테스트", "speaking_style": {"summary": "간결함"}},
+                allow_unicode=True,
+            ),
+            encoding="utf-8",
+        )
+
+        prompt = PersonaModule(str(path)).to_system_prompt()
+
+        assert "간결함" in prompt
+        for label in ["- 톤:", "- 어휘:", "- 문장:", "- 이모지:"]:
+            assert label not in prompt
+
     def test_contains_values(self, persona_path: str) -> None:
         mod = PersonaModule(persona_path)
         mod.load()

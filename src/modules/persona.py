@@ -63,10 +63,18 @@ class PersonaModule:
         if speaking:
             if summary := speaking.get("summary"):
                 parts.append(f"[말투]\n{summary}")
+            if tone := speaking.get("tone"):
+                parts.append(f"- 톤: {tone}")
+            if vocabulary := speaking.get("vocabulary"):
+                parts.append(f"- 어휘: {vocabulary}")
+            if sentence_pattern := speaking.get("sentence_pattern"):
+                parts.append(f"- 문장: {sentence_pattern}")
             if fillers := speaking.get("fillers"):
                 parts.append(f"- 말버릇: {', '.join(fillers)}")
             if endings := speaking.get("endings"):
                 parts.append(f"- 문미: {', '.join(endings)}")
+            if emojis := speaking.get("emojis"):
+                parts.append(f"- 이모지: {emojis}")
             parts.append("")
 
         # 가치관
