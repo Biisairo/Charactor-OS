@@ -17,11 +17,11 @@ import yaml
 from src.api.worker import CharacterWorker
 from src.character_os import CharacterOS
 
+# 상태 경로는 기본값을 두지 않는다. 생략하면 `CharacterOS`가
+# `characters/<id>/state/` 로 파생하므로 캐릭터마다 자동으로 분리된다 (TASK-17).
+# 설정에 명시하면 그 경로를 그대로 쓴다 — 이전 설정 파일과의 호환.
 DEFAULT_CONFIG = {
     "character_dir": "characters/hong-gil-dong",
-    "memory_db_path": "memory/memories.db",
-    "emotion_save_path": "memory/emotions.json",
-    "history_save_path": "memory/history.json",
     "model_type": "api",
     "local_model": "mlx-community/Qwen3.5-4B-MLX-4bit",
     "adapter_path": None,

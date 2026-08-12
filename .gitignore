@@ -19,6 +19,8 @@ data
 characters/*
 !characters/hong-gil-dong
 !characters/han-so-min
+# 캐릭터의 동적 상태 — 에이전트가 쌓은 기억·감정·히스토리 (TASK-17)
+characters/*/state/
 
 logs
 cache

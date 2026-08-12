@@ -10,11 +10,10 @@ from src.call_log import from_config as call_logger_from_config
 from src.character_os import CharacterOS
 from src.trace import format_trace
 
+# 상태 경로는 기본값을 두지 않는다. 생략하면 `CharacterOS`가
+# `characters/<id>/state/` 로 파생해 캐릭터마다 분리된다 (TASK-17).
 DEFAULT_CONFIG = {
     "character_dir": "characters/hong-gil-dong",
-    "memory_db_path": "memory/memories.db",
-    "emotion_save_path": "memory/emotions.json",
-    "history_save_path": "memory/history.json",
     "model_type": "api",
     "local_model": "mlx-community/Qwen3.5-4B-MLX-4bit",
     "adapter_path": None,
@@ -59,9 +58,9 @@ def main():
     # 캐릭터 OS 초기화
     cos = CharacterOS(
         character_dir=config["character_dir"],
-        memory_db_path=config["memory_db_path"],
-        emotion_save_path=config["emotion_save_path"],
-        history_save_path=config["history_save_path"],
+        memory_db_path=config.get("memory_db_path"),
+        emotion_save_path=config.get("emotion_save_path"),
+        history_save_path=config.get("history_save_path"),
         debug=debug,
         output=print,
         debug_output=print,

@@ -18,6 +18,7 @@ from src.api import deps
 from src.api.paths import CHARACTERS_DIR, SAFE_SEGMENT, safe_child
 from src.api.schemas import CreateCharacterRequest, PersonaUpdate, SwitchCharacterRequest
 from src.api.worker import CharacterWorker
+from src.character_layout import CharacterLayout
 from src.character_os import CharacterOS
 
 router = APIRouter(prefix="/api", tags=["characters"])
@@ -32,7 +33,7 @@ def list_characters():
 
     result = []
     for d in sorted(characters_dir.iterdir()):
-        persona_file = d / "persona.yaml"
+        persona_file = CharacterLayout.of(d).persona_path
         if d.is_dir() and persona_file.exists():
             try:
                 import yaml as _yaml
@@ -61,14 +62,18 @@ async def switch_character(req: SwitchCharacterRequest):
         raise HTTPException(
             status_code=404, detail=f"캐릭터를 찾을 수 없습니다: {req.character_id}"
         )
-    if not (character_dir / "persona.yaml").exists():
-        raise HTTPException(status_code=400, detail=f"persona.yaml이 없습니다: {req.character_id}")
+    if not CharacterLayout.of(character_dir).is_character():
+        raise HTTPException(
+            status_code=400, detail=f"static/persona.yaml이 없습니다: {req.character_id}"
+        )
 
     new_cos = CharacterOS(
         character_dir=str(character_dir),
-        memory_db_path=deps.get_config().get("memory_db_path", "memory/memories.db"),
-        emotion_save_path=deps.get_config().get("emotion_save_path", "memory/emotions.json"),
-        history_save_path=deps.get_config().get("history_save_path", "memory/history.json"),
+        # 기본값을 주지 않는다. 여기에 전역 경로를 넣으면 캐릭터를 전환해도
+        # 이전 캐릭터의 기억·감정을 그대로 물려받는다 — TASK-17이 고친 결함이다.
+        memory_db_path=deps.get_config().get("memory_db_path"),
+        emotion_save_path=deps.get_config().get("emotion_save_path"),
+        history_save_path=deps.get_config().get("history_save_path"),
         model_type=deps.get_config().get("model_type", "api"),
         local_model=deps.get_config().get("local_model", "mlx-community/Qwen3.5-4B-MLX-4bit"),
         adapter_path=deps.get_config().get("adapter_path"),
@@ -99,10 +104,10 @@ def create_character(req: CreateCharacterRequest):
     if char_dir.exists():
         raise HTTPException(status_code=409, detail=f"이미 존재하는 캐릭터입니다: {char_id}")
 
-    # 디렉토리 생성
-    char_dir.mkdir(parents=True)
-    (char_dir / "examples").mkdir()
-    (char_dir / "knowledge").mkdir()
+    # 디렉토리 생성 — 정적 자산만 만든다. state/는 첫 대화에서 생긴다.
+    layout = CharacterLayout.of(char_dir)
+    layout.examples_dir.mkdir(parents=True)
+    layout.knowledge_dir.mkdir(parents=True)
 
     # persona.yaml 템플릿 생성
     persona_data = {
@@ -153,7 +158,7 @@ def create_character(req: CreateCharacterRequest):
         ],
     }
 
-    (char_dir / "persona.yaml").write_text(
+    layout.persona_path.write_text(
         _yaml.dump(persona_data, allow_unicode=True, default_flow_style=False, sort_keys=False),
         encoding="utf-8",
     )

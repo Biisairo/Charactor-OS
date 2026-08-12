@@ -47,9 +47,9 @@ async def lifespan(app: FastAPI):
 
     cos = CharacterOS(
         character_dir=config["character_dir"],
-        memory_db_path=config["memory_db_path"],
-        emotion_save_path=config["emotion_save_path"],
-        history_save_path=config["history_save_path"],
+        memory_db_path=config.get("memory_db_path"),
+        emotion_save_path=config.get("emotion_save_path"),
+        history_save_path=config.get("history_save_path"),
         model_type=config["model_type"],
         local_model=config["local_model"],
         adapter_path=config["adapter_path"],

@@ -16,6 +16,7 @@ from pathlib import Path
 
 import pytest
 
+from src.character_layout import CharacterLayout
 from src.modules.fewshot import FewShotModule
 from src.modules.knowledge import KnowledgeModule
 
@@ -134,7 +135,9 @@ class TestCharacterOSSurfacesIssues:
     def test_load_issue_appears_in_logs(self, character_dir: Path, tmp_path: Path):
         from tests.conftest import MockClient, make_character_os
 
-        (character_dir / "examples" / "broken.yaml").write_text(BROKEN_YAML, encoding="utf-8")
+        (CharacterLayout.of(character_dir).examples_dir / "broken.yaml").write_text(
+            BROKEN_YAML, encoding="utf-8"
+        )
         cos = make_character_os(character_dir, tmp_path / "state", MockClient())
 
         joined = "\n".join(cos._debug_logs)
@@ -143,7 +146,9 @@ class TestCharacterOSSurfacesIssues:
     def test_expected_fallback_is_labelled_differently(self, character_dir: Path, tmp_path: Path):
         from tests.conftest import MockClient, make_character_os
 
-        (character_dir / "knowledge" / "notes.yaml").write_text(BROKEN_YAML, encoding="utf-8")
+        (CharacterLayout.of(character_dir).knowledge_dir / "notes.yaml").write_text(
+            BROKEN_YAML, encoding="utf-8"
+        )
         cos = make_character_os(character_dir, tmp_path / "state", MockClient())
 
         lines = [line for line in cos._debug_logs if "notes.yaml" in line]

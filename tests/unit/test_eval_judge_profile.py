@@ -16,6 +16,7 @@ from eval.judge import (
     build_judge_system_prompt,
     load_character_profile,
 )
+from src.character_layout import CharacterLayout
 from src.llm.client import TrimmedMessage
 
 CASE = GoldenCase(id="c1", category="greeting", input="안녕", expectation="인사한다")
@@ -87,7 +88,9 @@ class TestLoadCharacterProfile:
 
     def test_missing_world_does_not_fail(self, tmp_path):
         """knowledge가 없어도 페르소나만으로 프로필이 만들어진다."""
-        (tmp_path / "persona.yaml").write_text("name: 테스트\n", encoding="utf-8")
+        layout = CharacterLayout.of(tmp_path)
+        layout.static_dir.mkdir()
+        layout.persona_path.write_text("name: 테스트\n", encoding="utf-8")
 
         profile = load_character_profile(tmp_path)
 

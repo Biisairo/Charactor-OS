@@ -11,6 +11,7 @@ import numpy as np
 import pytest
 
 from src.call_log import CallLogger
+from src.character_layout import CharacterLayout
 from src.character_os import CharacterOS
 from src.llm.client import TrimmedMessage
 
@@ -115,19 +116,19 @@ def character_dir(tmp_path: Path) -> Path:
 @pytest.fixture
 def persona_path(character_dir: Path) -> str:
     """테스트용 페르소나 YAML 경로."""
-    return str(character_dir / "persona.yaml")
+    return str(CharacterLayout.of(character_dir).persona_path)
 
 
 @pytest.fixture
 def examples_dir(character_dir: Path) -> str:
     """테스트용 few-shot 예시 디렉토리."""
-    return str(character_dir / "examples")
+    return str(CharacterLayout.of(character_dir).examples_dir)
 
 
 @pytest.fixture
 def knowledge_dir(character_dir: Path) -> str:
     """테스트용 지식 디렉토리."""
-    return str(character_dir / "knowledge")
+    return str(CharacterLayout.of(character_dir).knowledge_dir)
 
 
 # ---------------------------------------------------------------------------

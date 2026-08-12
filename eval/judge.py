@@ -10,6 +10,7 @@ from pathlib import Path
 
 from eval.dataset import GoldenCase
 from eval.scoring import AXES, CaseScore, JudgeParseError, parse_judge_response
+from src.character_layout import CharacterLayout
 from src.modules.knowledge import KnowledgeModule
 from src.modules.persona import PersonaModule
 
@@ -51,13 +52,13 @@ class CharacterProfile:
 
 def load_character_profile(character_dir: Path | str) -> CharacterProfile:
     """캐릭터 자산에서 판정 기준을 읽는다. 자산이 없거나 비어도 실패하지 않는다."""
-    directory = Path(character_dir)
+    layout = CharacterLayout.of(character_dir)
 
-    persona = PersonaModule(str(directory / "persona.yaml"))
+    persona = PersonaModule(str(layout.persona_path))
     data = persona.load()
     speaking = data.get("speaking_style") or {}
 
-    knowledge = KnowledgeModule(str(directory / "knowledge"))
+    knowledge = KnowledgeModule(str(layout.knowledge_dir))
     knowledge.load_all()
     world = knowledge.get_world() or {}
 

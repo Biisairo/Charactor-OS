@@ -2,7 +2,7 @@
 
 [![CI](https://github.com/Biisairo/Charactor-OS/actions/workflows/ci.yml/badge.svg)](https://github.com/Biisairo/Charactor-OS/actions/workflows/ci.yml)
 ![Python](https://img.shields.io/badge/python-3.10%2B-blue)
-![Tests](https://img.shields.io/badge/tests-518%20passing-brightgreen)
+![Tests](https://img.shields.io/badge/tests-528%20passing-brightgreen)
 
 > 감정·기억·지식을 가진 캐릭터가 일관된 인격으로 대화하는 **LLM 에이전트 런타임**.
 >
@@ -93,7 +93,7 @@ LLM 캐릭터 챗봇의 어려움은 모델 호출이 아니라 **상태 관리�
 | LLM이 캐릭터 말투를 이탈한다 | **Reflection 패턴** — 초안을 스스로 검토하고 재생성. 상한 2회로 비용·지연 제한 |
 | 후처리 중 실패하면 상태가 깨진다 | **스냅샷 기반 롤백** — 감정·기억·히스토리를 원자적으로 되돌린 뒤 예외 전파 |
 | 에이전트가 왜 그렇게 답했는지 알 수 없다 | **PipelineTrace** — Stage별 소요 시간·토큰·모듈 기여도 기록, `GET /api/trace/last` |
-| LLM 호출 없이는 테스트가 불가능하다 | **클라이언트 의존성 주입** — API 키 없이 518개 테스트가 3초 내 완주 |
+| LLM 호출 없이는 테스트가 불가능하다 | **클라이언트 의존성 주입** — API 키 없이 528개 테스트가 3초 내 완주 |
 | 개선했다는 걸 어떻게 아는가 | **평가 하네스** — 골든 데이터셋 20건 × LLM-as-judge 3축 채점 |
 | 운영 중 무슨 일이 있었는지 알 수 없다 | **LLM 호출 운영 로그** — 프롬프트·응답 원문 + 토큰·비용을 비동기 append |
 | 프로바이더 거부가 캐릭터 발화로 위장된다 | **거부 판별 후 재시도** — 지속되면 오류로 명시. 상태에 저장하지 않아 이후 턴이 오염되지 않음 |
@@ -246,7 +246,7 @@ cp .env.example .env      # OPENAI_API_KEY 입력
 
 ```bash
 uv run pytest -q
-# 518 passed in 1.45s
+# 528 passed in 1.90s
 ```
 
 ### CLI 대화
@@ -289,17 +289,25 @@ uv run uvicorn src.api.server:app --reload
 
 ```
 characters/hong-gil-dong/
-├── persona.yaml            # 성격, 말투, 감정 트리거, 내면 상태
-├── knowledge/
-│   ├── world.yaml          # 세계관
-│   ├── relationships.yaml  # 관계 그래프
-│   ├── timeline.yaml       # 연표
-│   └── locations.yaml      # 장소
-└── examples/               # few-shot 예시 (태그별)
-    ├── greeting.yaml
-    ├── comfort.yaml
-    └── ...
+├── static/                 # 사람이 쓴 정체성 — git 추적
+│   ├── persona.yaml        #   성격, 말투, 감정 트리거, 내면 상태
+│   ├── knowledge/
+│   │   ├── world.yaml      #   세계관
+│   │   ├── relationships.yaml
+│   │   ├── timeline.yaml
+│   │   └── locations.yaml
+│   └── examples/           #   few-shot 예시 (태그별)
+│       ├── greeting.yaml
+│       └── ...
+└── state/                  # 에이전트가 쌓은 경험 — gitignore
+    ├── memories.db         #   장기 기억 (SQLite)
+    ├── emotions.json       #   감정 상태
+    └── history.json        #   최근 대화
 ```
+
+**`static/`은 사람이 쓰고 에이전트는 읽기만 하며, `state/`는 에이전트가 쌓는다.**
+"에이전트는 정적 파일을 절대 수정하지 않는다"는 불변식을 디렉토리 경계로 드러낸 것입니다.
+`state/`는 캐릭터마다 따로 생기므로 캐릭터를 바꿔도 기억이 섞이지 않습니다.
 
 ```bash
 uv run python main.py --character characters/my-character
@@ -316,7 +324,7 @@ uv run python main.py --character characters/my-character
 | 시대 | 조선 중기 (16세기) | 2020년대 후반 서울 |
 | 말투 | 고어체 섞인 존대·반말 | 구어체 반말, 신조어·이모지 |
 | 세계관 | 신분제, 서자, 의적 | 플랫폼 경제, 동접·클립·도네 |
-| 자산 | 11파일 | 12파일 |
+| 자산 | static/ 11파일 | static/ 12파일 |
 
 **신규 캐릭터를 추가한 커밋의 diff에는 `src/` 변경이 없습니다.** 아래는 두 캐릭터에
 동일한 5턴을 동일한 코드로 준 실제 출력입니다.

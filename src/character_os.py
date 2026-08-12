@@ -8,6 +8,7 @@ from pathlib import Path
 
 from src.analysis import ConflictClassifier, EmotionAnalyzer, MemoryExtractor
 from src.call_log import CallLogger
+from src.character_layout import CharacterLayout
 from src.llm.client import Client
 from src.metrics import CallMeter
 from src.modules import (
@@ -91,9 +92,9 @@ class CharacterOS:
     def __init__(
         self,
         character_dir: str,
-        memory_db_path: str = "memory/memories.db",
-        emotion_save_path: str = "memory/emotions.json",
-        history_save_path: str = "memory/history.json",
+        memory_db_path: str | None = None,
+        emotion_save_path: str | None = None,
+        history_save_path: str | None = None,
         debug: bool = False,
         output: Callable[[str], None] = print,
         debug_output: Callable[[str], None] | None = None,
@@ -111,13 +112,22 @@ class CharacterOS:
                 테스트에서 실제 API 호출 없이 파이프라인을 검증하기 위한 진입점이다.
             call_logger: LLM 호출 운영 로거. 생략하면 기본 경로에 기록한다.
                 테스트에서는 비활성 로거를 주입해 파일 쓰기를 막는다.
+            memory_db_path, emotion_save_path, history_save_path:
+                생략하면 `character_dir/state/` 아래로 파생한다. 캐릭터마다
+                상태가 분리되는 것이 기본 동작이다 (TASK-17). 명시하면 그
+                경로를 그대로 쓴다 — 평가 하네스와 테스트가 상태를 임시
+                디렉토리로 격리할 때 쓰는 경로다.
         """
         self._character_dir = Path(character_dir)
+        layout = CharacterLayout.of(self._character_dir)
         self._trace_enabled = trace
         self._last_trace: PipelineTrace | None = None
-        persona_path = str(self._character_dir / "persona.yaml")
-        knowledge_dir = str(self._character_dir / "knowledge")
-        examples_dir = str(self._character_dir / "examples")
+        persona_path = str(layout.persona_path)
+        knowledge_dir = str(layout.knowledge_dir)
+        examples_dir = str(layout.examples_dir)
+        memory_db_path = memory_db_path or str(layout.memory_db_path)
+        emotion_save_path = emotion_save_path or str(layout.emotion_save_path)
+        history_save_path = history_save_path or str(layout.history_save_path)
         self._debug = debug
         self._output = output
         self._debug_output = debug_output or (lambda msg: None)
