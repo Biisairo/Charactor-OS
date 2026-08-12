@@ -6,6 +6,14 @@ export const STAGE_LABELS: Record<string, string> = {
   postprocess: "후처리",
 };
 
+// LLM 호출 지점(계측 라벨) → 화면 표기. `src/character_os.py`의 `_meter.wrap()` 라벨과 맞춘다.
+export const LLM_LABELS: Record<string, string> = {
+  response: "응답 생성",
+  reflection: "검토",
+  emotion: "감정 갱신",
+  memory: "기억 추출",
+};
+
 export const ERROR_KEYWORDS = ["실패", "오류", "error", "FAIL"];
 
 // 응답을 기다리는 동안 자리를 잡아두는 assistant 메시지의 ID

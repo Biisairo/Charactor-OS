@@ -117,7 +117,10 @@ export function useServerState({ onHistoryLoaded, onConversationCleared }: Optio
   useEffect(() => {
     refreshData();
     fetchDebugLogs();
-  }, [refreshData, fetchDebugLogs]);
+    // 성능 패널은 대화 완료 시에만 갱신되었다. 새로고침 직후에는 직전 턴의
+    // 트레이스가 서버에 남아 있는데도 화면이 "데이터 없음"이었다 (REQ-13-1).
+    refreshPerformance();
+  }, [refreshData, fetchDebugLogs, refreshPerformance]);
 
   // 디버그가 켜져 있을 때만 로그를 주기적으로 당겨온다.
   useEffect(() => {

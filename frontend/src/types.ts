@@ -88,10 +88,35 @@ export interface CharacterInfo {
   identity: string;
 }
 
+export interface LabelMetrics {
+  calls: number;
+  prompt_tokens: number;
+  completion_tokens: number;
+  duration_ms: number;
+}
+
+export interface TurnMetrics {
+  calls: number;
+  failed_calls: number;
+  refused_calls: number;
+  /** 성공했고 거부도 아닌데 usage가 없는 호출 수. */
+  unknown_usage_calls: number;
+  /** 참이면 토큰 합계는 하한이다 — 화면에서 반드시 그렇게 표시한다. */
+  tokens_are_lower_bound: boolean;
+  prompt_tokens: number;
+  completion_tokens: number;
+  total_tokens: number;
+  /** 단가표에 없는 모델이면 null. 0과 구별해야 한다. */
+  cost_usd: number | null;
+  model?: string;
+  by_label: Record<string, LabelMetrics>;
+}
+
 export interface PerformanceData {
   trace?: {
     stages?: { name: string; duration_ms: number }[];
     total_duration_ms?: number;
+    metrics?: TurnMetrics;
   };
   emotion_state?: EmotionState;
   memory_count?: number;
