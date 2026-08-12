@@ -6,6 +6,8 @@
 
 from __future__ import annotations
 
+from pathlib import Path
+
 import pytest
 
 from eval.dataset import (
@@ -126,22 +128,39 @@ class TestValidateCoverage:
 # ---------------------------------------------------------------------------
 
 
+SHIPPED_CHARACTERS = ["hong-gil-dong", "han-so-min"]
+
+
 class TestShippedDataset:
-    def test_hong_gil_dong_loads_and_satisfies_coverage(self):
-        dataset = load_dataset("hong-gil-dong")
+    @pytest.mark.parametrize("character", SHIPPED_CHARACTERS)
+    def test_loads_and_satisfies_coverage(self, character):
+        dataset = load_dataset(character)
 
         assert len(dataset.cases) >= MIN_TOTAL_CASES
         for category in REQUIRED_CATEGORIES:
             assert dataset.categories().get(category, 0) >= MIN_CASES_PER_CATEGORY
 
-    def test_memory_cases_have_setup(self):
+    @pytest.mark.parametrize("character", SHIPPED_CHARACTERS)
+    def test_memory_cases_have_setup(self, character):
         """기억 참조 사례는 참조할 기억이 없으면 성립하지 않는다."""
-        dataset = load_dataset("hong-gil-dong")
+        dataset = load_dataset(character)
 
         memory_cases = [c for c in dataset.cases if c.category == "memory_recall"]
         assert memory_cases
         for case in memory_cases:
             assert case.setup, f"{case.id}: setup 발화가 필요하다"
+
+    @pytest.mark.parametrize("character", SHIPPED_CHARACTERS)
+    def test_dataset_has_a_matching_character(self, character):
+        """데이터셋은 실재하는 캐릭터 자산을 가리켜야 한다.
+
+        평가는 characters/<id>로 대화를 돌린다. 둘의 id가 어긋나면
+        평가가 엉뚱한 캐릭터를 채점하거나 실행 직전에 죽는다.
+        """
+        dataset = load_dataset(character)
+
+        assert dataset.character == character
+        assert Path("characters") / character in list(Path("characters").iterdir())
 
     def test_missing_dataset_reports_available(self):
         with pytest.raises(DatasetError, match="사용 가능"):
