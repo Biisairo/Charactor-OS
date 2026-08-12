@@ -3,7 +3,9 @@ import time
 from collections.abc import Callable
 from pathlib import Path
 
-from src.validity import provider_error_reason
+# 기존 감정에 두는 무게. 새 값은 (1 - 이 값)만큼 섞인다.
+# 대화 한 번으로 감정이 뒤집히지 않게 하려는 장치다.
+EXISTING_EMOTION_WEIGHT = 0.7
 
 
 # ANSI 색상 코드
@@ -119,18 +121,19 @@ class EmotionModule:
         self,
         user_input: str,
         character_response: str,
-        client,
+        analyzer,
         history_context: str = "",
-        prompt_callback: Callable[[str, str], None] | None = None,
     ) -> None:
-        """대화를 분석하여 감정 상태를 업데이트한다. (별도 LLM 호출)
+        """대화를 반영해 감정 상태를 갱신한다.
+
+        LLM 상호작용은 `analyzer`가 맡는다. 이 메서드는 **무엇을 받아들일지**만
+        정하므로, 더블 없이 규칙만 바꿔 끼워 검증할 수 있다.
+
+        순서가 의미를 갖는다. decay와 트리거는 분석 **이전**에 적용된다 —
+        분석기에 넘기는 "현재 상태"가 이미 시간이 흐른 뒤의 값이어야 하기 때문이다.
 
         Args:
-            user_input: 사용자 입력
-            character_response: 캐릭터 응답
-            client: LLM 클라이언트
-            history_context: 이전 대화 맥락 (흐름과 맥락을 보기 위함)
-            prompt_callback: 프롬프트 로깅 콜백 (module, prompt)
+            analyzer: `analyze(user_input, response, current, history) -> EmotionAnalysis`
         """
         self._log_debug("")
         self._log_debug("update() 호출")
@@ -140,124 +143,41 @@ class EmotionModule:
         self.apply_decay()
         self._apply_triggers(user_input)
 
-        # 현재 감정 상태를 프롬프트에 포함
-        current_emotions_str = (
-            json.dumps(self._emotions, ensure_ascii=False) if self._emotions else "{}"
+        analysis = analyzer.analyze(
+            user_input, character_response, dict(self._emotions), history_context
         )
+        self._log_debug(f"significant: {analysis.significant}")
 
-        prompt = f"""캐릭터의 감정 상태를 업데이트하세요. 변화가 미미하면 현재 상태를 유지합니다.
-
-{history_context}
-
-사용자: {user_input}
-캐릭터: {character_response}
-
-현재 감정 상태:
-{current_emotions_str}
-
-다음 JSON 형식으로 반환하세요:
-{{
-    "emotions": {{
-        "감정이름": 0.0~1.0,
-        ...
-    }},
-    "remove": ["제거할 감정 이름", ...],
-    "significant": true/false
-}}
-
-규칙:
-- 감정이 없는 상태(빈 {{}})가 기본값입니다. 중립=정상 상태입니다
-- significant가 true일 때만 emotions/remove를 채우세요
-- 일상적 대화(안부, 짧은 대답, 정보 교환)는 significant=false로 반환하세요
-- 감정 변화가 명확할 때만 significant=true: 감동, 분노, 슬픔, 큰 기쁨, 충격 등
-- 감정 이름은 자유롭게 정하세요 (예: 행복, 슬픔, 분노, 설렘, 피로, 향수 등)
-- 값은 0.0에서 1.0 사이
-- 현재 감정 중 이 대화로 인해 완전히 사라진 것만 remove에 포함하세요
-- 애매하면 유지하세요. 감정은 쉽게 변하지 않습니다
-- 대부분의 대화에서 significant=false여야 합니다"""
-
-        self._log_debug("LLM 호출 (감정 분석)")
-        self._log_debug(f"현재 감정 상태: {current_emotions_str}")
-
-        if prompt_callback:
-            prompt_callback("emotion", prompt)
-
-        result = client.call_llm(
-            messages=[
-                {"role": "system", "content": "감정 분석기. JSON만 반환하세요."},
-                {"role": "user", "content": prompt},
-            ],
-            tools=[],
-            use_stream=False,
-            mute=True,
-            response_format={
-                "type": "json_schema",
-                "json_schema": {
-                    "name": "emotion_update",
-                    "schema": {
-                        "type": "object",
-                        "properties": {
-                            "emotions": {
-                                "type": "object",
-                                "additionalProperties": {
-                                    "type": "number",
-                                    "maximum": 1.0,
-                                    "minimum": 0.0,
-                                },
-                            },
-                            "remove": {"type": "array", "items": {"type": "string"}},
-                            "significant": {"type": "boolean"},
-                        },
-                        "required": ["significant"],
-                    },
-                },
-            },
-        ).content
-
-        self._log_debug(f"LLM 응답: {result}")
-
-        try:
-            data = json.loads(result)
-            significant = data.get("significant", False)
-            self._log_debug(f"significant: {significant}")
-
-            if not significant:
-                self._log_debug("미미한 변화 — 감정 상태 유지")
-                return
-
-            new_emotions = data.get("emotions", {})
-            remove_list = data.get("remove", [])
-            self._log_debug(f"추출된 감정: {new_emotions}")
-            self._log_debug(f"제거 대상: {remove_list}")
-
-            # 제거할 감정 처리
-            for name in remove_list:
-                if name in self._emotions:
-                    old_value = self._emotions.pop(name)
-                    self._log_debug(f"  감정 '{name}' 제거 (이전 값: {old_value:.3f})")
-
-            # 새 감정 추가/업데이트 (블렌딩: 가중 평균)
-            for name, value in new_emotions.items():
-                if isinstance(value, (int, float)) and 0 <= value <= 1:
-                    if name in self._emotions:
-                        old_value = self._emotions[name]
-                        blended = old_value * 0.7 + value * 0.3
-                        self._emotions[name] = round(blended, 3)
-                        self._log_debug(
-                            f"  감정 '{name}' 블렌딩: {old_value:.3f} + {value:.3f} -> {self._emotions[name]:.3f}"
-                        )
-                    else:
-                        self._emotions[name] = value
-                        self._log_debug(f"  감정 '{name}' 추가: {value:.3f}")
-        except (json.JSONDecodeError, AttributeError) as e:
-            reason = provider_error_reason(result)
-            if reason:
-                # 파싱 실패로 뭉뚱그리면 프로바이더 장애가 데이터 문제로 보인다.
-                self._log_debug(f"프로바이더 거부 — 감정 갱신을 건너뜀: {reason}")
-            else:
-                self._log_debug(f"JSON 파싱 실패: {e}")
+        if not analysis.significant:
+            self._log_debug("미미한 변화 — 감정 상태 유지")
+        else:
+            self._apply(analysis)
 
         self._log_debug(f"최종 감정 상태: {self._emotions}")
+
+    def _apply(self, analysis) -> None:
+        """분석 결과를 감정 상태에 반영한다."""
+        for name in analysis.remove:
+            if name in self._emotions:
+                old_value = self._emotions.pop(name)
+                self._log_debug(f"  감정 '{name}' 제거 (이전 값: {old_value:.3f})")
+
+        for name, value in analysis.emotions.items():
+            if not isinstance(value, (int, float)) or not 0 <= value <= 1:
+                continue
+            if name in self._emotions:
+                # 급변을 막는다 — 기존 값에 무게를 둔 가중 평균으로 섞는다.
+                old_value = self._emotions[name]
+                self._emotions[name] = round(
+                    old_value * EXISTING_EMOTION_WEIGHT + value * (1 - EXISTING_EMOTION_WEIGHT), 3
+                )
+                self._log_debug(
+                    f"  감정 '{name}' 블렌딩: {old_value:.3f} + {value:.3f}"
+                    f" -> {self._emotions[name]:.3f}"
+                )
+            else:
+                self._emotions[name] = value
+                self._log_debug(f"  감정 '{name}' 추가: {value:.3f}")
 
     def save(self) -> None:
         """감정 상태를 JSON 파일로 저장한다."""

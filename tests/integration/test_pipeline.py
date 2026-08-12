@@ -248,3 +248,42 @@ class TestEmotionStateChange:
         # 감정 상태에 변화가 있어야 한다
         assert len(final_state) >= len(initial_state)
         assert "분노" in final_state or "슬픔" in final_state
+
+
+# ---------------------------------------------------------------------------
+# 분석 층 배선 (TASK-14)
+#
+# 오케스트레이터가 분석기에 `on_prompt`를 넘기지 않으면 프롬프트가 디버그
+# 패널에서 조용히 사라진다. 눈으로만 확인하면 다음 리팩터링에서 다시 끊긴다.
+# ---------------------------------------------------------------------------
+
+
+class TestAnalyzerWiring:
+    def test_memory_prompt_reaches_debug_log(self, character_dir: Path, tmp_path: Path):
+        client = PipelineMockClient(response="흠, 반갑구나.")
+        cos = make_character_os(character_dir, tmp_path / "state", client, debug=True)
+
+        cos.chat("안녕하시오")
+
+        assert "[memory 프롬프트]" in "\n".join(cos._debug_logs)
+
+    def test_emotion_prompt_reaches_debug_log(self, character_dir: Path, tmp_path: Path):
+        client = PipelineMockClient(response="흠, 반갑구나.")
+        cos = make_character_os(character_dir, tmp_path / "state", client, debug=True)
+
+        cos.chat("안녕하시오")
+
+        assert "[emotion 프롬프트]" in "\n".join(cos._debug_logs)
+
+    def test_analysis_layer_uses_labelled_clients(self, character_dir: Path, tmp_path: Path):
+        """분석 층을 거쳐도 계측 라벨이 유지되어야 한다.
+
+        라벨이 끊기면 비용이 어느 단계에서 나왔는지 알 수 없게 된다 (TASK-04).
+        """
+        client = PipelineMockClient(response="흠, 반갑구나.")
+        cos = make_character_os(character_dir, tmp_path / "state", client, debug=True)
+
+        cos.chat("안녕하시오")
+
+        labels = set(cos._meter.summary()["by_label"])
+        assert {"response", "emotion", "memory"} <= labels

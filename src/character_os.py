@@ -6,6 +6,7 @@ from collections.abc import Callable
 from dataclasses import dataclass
 from pathlib import Path
 
+from src.analysis import ConflictClassifier, EmotionAnalyzer, MemoryExtractor
 from src.call_log import CallLogger
 from src.llm.client import Client
 from src.metrics import CallMeter
@@ -58,6 +59,21 @@ MODULE_HEADERS = {
     "response": f"{Colors.YELLOW}{Colors.BOLD}[Response]{Colors.RESET}",
     "postprocess": f"{Colors.GREEN}{Colors.BOLD}[PostProcess]{Colors.RESET}",
 }
+
+
+@dataclass
+class _Turn:
+    """턴 하나가 지나는 동안 Stage들이 공유하는 상태.
+
+    실패 여부를 값으로 들고 다니면 "앞이 실패했으면 멈춘다"를 호출부에서
+    한 줄로 표현할 수 있다.
+    """
+
+    user_input: str
+    started: float
+    trace: PipelineTrace | None = None
+    response: str = ""
+    failed: bool = False
 
 
 @dataclass
@@ -221,6 +237,10 @@ class CharacterOS:
         self._log("=" * 60, module="orchestrator")
         self._log("CharacterOS 초기화 완료", module="orchestrator")
         self._log("=" * 60, module="orchestrator")
+
+    def _log_prompt(self, module: str, prompt: str) -> None:
+        """분석 층이 만든 프롬프트를 디버그 로그로 넘긴다."""
+        self._log(f"[{module} 프롬프트]", module="postprocess", data=prompt)
 
     def _report_asset_issues(self) -> None:
         """정적 자산 모듈이 모은 로드 문제를 로그로 올린다 (REQ-06-1 · 06-3).
@@ -437,11 +457,10 @@ class CharacterOS:
                     self.emotion.update,
                     user_input,
                     response,
-                    self._meter.wrap(self.client, "emotion"),
-                    history_context=history_context,
-                    prompt_callback=lambda module, prompt: self._log(
-                        f"[{module} 프롬프트]", module="postprocess", data=prompt
+                    EmotionAnalyzer(
+                        self._meter.wrap(self.client, "emotion"), on_prompt=self._log_prompt
                     ),
+                    history_context=history_context,
                 )
                 history_future = pool.submit(self._add_history, user_input, response)
                 emotion_future.result()
@@ -452,15 +471,14 @@ class CharacterOS:
 
             # 2. Memory 업데이트 (감정 결과 사용 → emotion 완료 후)
             self._log("memory.update() 호출", module="postprocess")
+            memory_client = self._meter.wrap(self.client, "memory")
             self.memory.update(
                 user_input,
                 response,
                 self.emotion.get_state(),
-                self._meter.wrap(self.client, "memory"),
+                MemoryExtractor(memory_client, on_prompt=self._log_prompt),
+                ConflictClassifier(memory_client, on_prompt=self._log_prompt),
                 history_context=history_context,
-                prompt_callback=lambda module, prompt: self._log(
-                    f"[{module} 프롬프트]", module="postprocess", data=prompt
-                ),
             )
             self._log(f"memory 개수: {self.memory.snapshot_count()}", module="postprocess")
 
@@ -527,7 +545,12 @@ class CharacterOS:
         return summary
 
     def chat(self, user_input: str) -> str | None:
-        """전체 3-stage 파이프라인 실행. 후처리 실패 시 None 반환."""
+        """전체 3-stage 파이프라인 실행. 어느 단계든 실패하면 None 반환.
+
+        Stage마다 트레이스 구간을 열고 닫고, 실패하면 로그·출력·턴 기록·트레이스
+        마감을 똑같이 수행한다. 그 반복을 `_run_stage()`가 맡는다 — 분리 전에는
+        세 번 복제되어 있어 오류 처리를 고치려면 세 곳을 함께 고쳐야 했다.
+        """
         self._log("")
         self._log("=" * 60, module="orchestrator")
         self._log(f"chat() 호출: {user_input}", module="orchestrator")
@@ -535,84 +558,59 @@ class CharacterOS:
 
         self._turn_id = uuid.uuid4().hex[:12]
         self._meter.reset()  # 계측은 턴 단위
-        turn_started = time.perf_counter()
+        turn = _Turn(user_input=user_input, started=time.perf_counter())
 
-        trace = PipelineTrace() if self._trace_enabled else None
-        if trace:
-            trace.start(user_input)
+        if self._trace_enabled:
+            turn.trace = PipelineTrace()
+            turn.trace.start(user_input)
 
-        # Stage 1: 컨텍스트 수집
-        try:
-            if trace:
-                stage1 = trace.add_stage("context")
-            context = self._gather_context(user_input)
-            if trace:
-                stage1.finish()
-                stage1.details = {
-                    "persona_len": len(context.persona),
-                    "knowledge_len": len(context.knowledge_context),
-                    "emotion_len": len(context.emotion),
-                    "memory_len": len(context.memory_context),
-                    "history_len": len(context.history_context),
-                }
-        except Exception as e:
-            self._log(f"Stage 1 실패: {e}", module="orchestrator")
-            self._output(f"\n오류: 컨텍스트 수집 실패 — {e}")
-            self._log_turn(user_input, "", turn_started, error=f"Stage 1: {e}")
-            if trace:
-                trace.metrics = self._collect_metrics()
-                trace.finish(error=str(e))
-                self._last_trace = trace
+        context = self._run_stage(
+            turn,
+            "context",
+            lambda: self._gather_context(user_input),
+            failure_message="컨텍스트 수집 실패",
+            details=lambda ctx: {
+                "persona_len": len(ctx.persona),
+                "knowledge_len": len(ctx.knowledge_context),
+                "emotion_len": len(ctx.emotion),
+                "memory_len": len(ctx.memory_context),
+                "history_len": len(ctx.history_context),
+            },
+        )
+        if turn.failed:
             return None
 
-        # Stage 2: 응답 생성 (mute — 출력하지 않음)
-        try:
-            if trace:
-                stage2 = trace.add_stage("response")
-            response = self._generate_response(user_input, context)
-            if trace:
-                stage2.finish()
-                stage2.details = {"response_len": len(response)}
-        except Exception as e:
-            self._log(f"Stage 2 실패: {e}", module="orchestrator")
-            self._output(f"\n오류: 응답 생성 실패 — {e}")
-            self._log_turn(user_input, "", turn_started, error=f"Stage 2: {e}")
-            if trace:
-                trace.metrics = self._collect_metrics()
-                trace.finish(error=str(e))
-                self._last_trace = trace
+        response = self._run_stage(
+            turn,
+            "response",
+            lambda: self._generate_response(user_input, context),
+            failure_message="응답 생성 실패",
+            details=lambda r: {"response_len": len(r)},
+        )
+        if turn.failed:
             return None
 
-        # Stage 3: 상태 업데이트 (실패 시 롤백)
-        try:
-            if trace:
-                stage3 = trace.add_stage("postprocess")
-            self._post_process(user_input, response)
-            if trace:
-                stage3.finish()
-                stage3.details = {
-                    "emotion_state": dict(self.emotion.get_state()),
-                    "memory_count": self.memory.snapshot_count(),
-                    "history_count": self.history.count(),
-                }
-        except Exception as e:
-            self._log(f"Stage 3 실패, 롤백 완료: {e}", module="orchestrator")
-            self._output(f"\n오류: 후처리 실패, 대화가 저장되지 않았습니다 — {e}")
-            self._log_turn(user_input, response, turn_started, error=f"Stage 3: {e}")
-            if trace:
-                trace.metrics = self._collect_metrics()
-                trace.finish(error=str(e))
-                self._last_trace = trace
+        # 여기부터 응답은 확정이다. 이후 실패는 응답도 함께 버린다 —
+        # 상태에 남지 않은 대화를 보여주면 다음 턴의 컨텍스트와 어긋난다.
+        turn.response = response
+
+        self._run_stage(
+            turn,
+            "postprocess",
+            lambda: self._post_process(user_input, response),
+            failure_message="후처리 실패, 대화가 저장되지 않았습니다",
+            details=lambda _: {
+                "emotion_state": dict(self.emotion.get_state()),
+                "memory_count": self.memory.snapshot_count(),
+                "history_count": self.history.count(),
+            },
+        )
+        if turn.failed:
             return None
 
-        # 후처리 성공 시에만 응답 출력
         self._output(f"캐릭터: {response}")
-        self._log_turn(user_input, response, turn_started)
-
-        if trace:
-            trace.metrics = self._collect_metrics()
-            trace.finish(response=response)
-            self._last_trace = trace
+        self._log_turn(user_input, response, turn.started)
+        self._finish_trace(turn, response=response)
 
         self._log("")
         self._log("=" * 60, module="orchestrator")
@@ -620,3 +618,35 @@ class CharacterOS:
         self._log("=" * 60, module="orchestrator")
 
         return response
+
+    def _run_stage(self, turn, name, action, failure_message, details):
+        """Stage 하나를 실행하고 트레이스·실패 처리를 일괄 수행한다.
+
+        실패하면 `turn.failed`를 세우고 None을 반환한다. 예외를 밖으로 올리지 않는
+        것은 호출부가 같은 except를 세 번 쓰지 않게 하기 위해서다.
+        """
+        span = turn.trace.add_stage(name) if turn.trace else None
+        try:
+            result = action()
+        except Exception as e:
+            turn.failed = True
+            self._log(f"{name} 실패: {e}", module="orchestrator")
+            self._output(f"\n오류: {failure_message} — {e}")
+            self._log_turn(turn.user_input, turn.response, turn.started, error=f"{name}: {e}")
+            self._finish_trace(turn, error=str(e))
+            return None
+
+        if span:
+            span.finish()
+            span.details = details(result)
+        return result
+
+    def _finish_trace(self, turn, response: str = "", error: str | None = None) -> None:
+        if not turn.trace:
+            return
+        turn.trace.metrics = self._collect_metrics()
+        if error:
+            turn.trace.finish(error=error)
+        else:
+            turn.trace.finish(response=response)
+        self._last_trace = turn.trace

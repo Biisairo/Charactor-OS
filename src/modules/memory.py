@@ -8,8 +8,6 @@ from pathlib import Path
 
 import numpy as np
 
-from src.validity import provider_error_reason
-
 
 # ANSI 색상 코드
 class Colors:
@@ -41,6 +39,10 @@ class MemoryEntry:
 
 
 MIN_RELEVANCE_SCORE = 0.3
+
+# 이보다 가까우면 "같은 이야기일 수 있다"고 보고 LLM에 관계를 묻는다.
+# 미만이면 묻지 않고 새 기억으로 넣는다 — 호출을 아끼는 지점이다.
+SIMILAR_MEMORY_THRESHOLD = 0.7
 
 
 class MemoryModule:
@@ -242,253 +244,91 @@ class MemoryModule:
         other_chars = len(text) - korean_chars
         return int(korean_chars * 1.5 + other_chars * 0.3)
 
-    def _check_conflict(
-        self, content: str, client, prompt_callback: Callable[[str, str], None] | None = None
-    ) -> str:
-        """기존 기억과 충돌 여부를 확인한다."""
-        self._log_debug(f"_check_conflict() 호출: '{content}'")
-
-        if not self._memories:
-            self._log_debug("기존 기억 없음 -> DIFFERENT")
-            return "DIFFERENT"
-
-        query_vec = self._embedding_fn(content)
-        best_id, best_score = None, -1.0
-
-        for entry in self._memories.values():
-            score = float(np.dot(query_vec, entry.embedding))
-            if score > best_score:
-                best_score = score
-                best_id = entry.id
-
-        self._log_debug(f"최고 유사도: {best_score:.4f} (id: {best_id})")
-
-        if best_score < 0.7:
-            self._log_debug("유사도 < 0.7 -> DIFFERENT")
-            return "DIFFERENT"
-
-        existing = self._memories[best_id]
-        prompt = f"""다음 두 기억을 비교하세요.
-
-기존 기억: {existing.content}
-새 기억: {content}
-
-다음 중 하나로 분류하세요:
-- IDENTICAL: 같은 정보
-- SIMILAR: 관련 있지만 다른 정보
-- DIFFERENT: 완전히 다른 정보
-
-JSON으로 반환: {{"classification": "IDENTICAL|SIMILAR|DIFFERENT"}}"""
-
-        self._log_debug("충돌 판정 LLM 호출")
-        self._log_debug(f"기존 기억: {existing.content}")
-        self._log_debug(f"새 기억: {content}")
-
-        if prompt_callback:
-            prompt_callback("memory_conflict", prompt)
-
-        result = client.call_llm(
-            messages=[
-                {"role": "system", "content": "기억 분류기. JSON만 반환하세요."},
-                {"role": "user", "content": prompt},
-            ],
-            tools=[],
-            use_stream=False,
-            mute=True,
-            response_format={
-                "type": "json_schema",
-                "json_schema": {
-                    "name": "memory_conflict",
-                    "schema": {
-                        "type": "object",
-                        "properties": {
-                            "classification": {
-                                "type": "string",
-                                "enum": ["SAME", "CONTRADICT", "DIFFERENT"],
-                            },
-                        },
-                        "required": ["classification"],
-                    },
-                },
-            },
-        ).content
-
-        self._log_debug(f"LLM 응답: {result}")
-
-        try:
-            data = json.loads(result)
-            classification = data.get("classification", "DIFFERENT")
-            self._log_debug(f"분류 결과: {classification}")
-            return classification
-        except (json.JSONDecodeError, AttributeError) as e:
-            reason = provider_error_reason(result)
-            if reason:
-                # 파싱 실패로 뭉뚱그리면 프로바이더 장애가 데이터 문제로 보인다.
-                self._log_debug(f"프로바이더 거부 — 충돌 판정을 DIFFERENT로 처리: {reason}")
-            else:
-                self._log_debug(f"JSON 파싱 실패: {e}")
-            return "DIFFERENT"
-
     def update(
         self,
         user_input: str,
         character_response: str,
         emotions: dict[str, float],
-        client,
+        extractor,
+        classifier,
         history_context: str = "",
-        prompt_callback: Callable[[str, str], None] | None = None,
     ) -> None:
-        """대화에서 핵심 정보를 추출하여 기억에 저장한다. (별도 LLM 호출)
+        """대화에서 뽑은 사실을 기억에 반영한다.
+
+        LLM 상호작용은 `extractor`·`classifier`가 맡는다. 이 메서드는 **무엇을
+        저장·병합·갱신할지**만 정하므로, 더블 없이 규칙만 바꿔 끼워 검증할 수 있다.
 
         Args:
-            user_input: 사용자 입력
-            character_response: 캐릭터 응답
-            emotions: 감정 태그
-            client: LLM 클라이언트
-            history_context: 이전 대화 맥락 (흐름과 맥락을 보기 위함)
-            prompt_callback: 프롬프트 로깅 콜백 (module, prompt)
+            extractor: `extract(user_input, response, history) -> list[MemoryCandidate]`
+            classifier: `classify(existing_content, content) -> Classification`
         """
         self._log_debug("")
         self._log_debug("update() 호출")
-        self._log_debug(f"사용자 입력: {user_input}")
-        self._log_debug(f"캐릭터 응답: {character_response[:50]}...")
-        self._log_debug(f"감정 태그: {emotions}")
 
-        prompt = f"""다음 대화에서 **사용자에 대한 구체적인 사실**만 추출하세요.
-
-{history_context}
-
-사용자: {user_input}
-캐릭터: {character_response}
-
-다음 JSON 형식으로 반환하세요:
-{{
-    "memories": [
-        {{
-            "content": "기억할 내용",
-            "importance": 0.0~1.0
-        }}
-    ]
-}}
-
-기억할 수 있는 것 (구체적 사실):
-- 이름, 나이, 직업, 거주지
-- 좋아하는/싫어하는 것
-- 가족, 반려동물
-- 특별한 경험, 사건
-- 고민, 목표
-
-기억하면 안 되는 것:
-- 대화 스타일, 패턴
-- 감정 상태 (별도 관리됨)
-- 일반적인 관심표현
-- 모호한 추론
-
-규칙:
-- 이미 알려진 정보와 중복되면 저장하지 않음
-- 구체적인 사실만 저장 (추론 X)
-- 추출할 정보가 없으면 빈 배열 반환"""
-
-        self._log_debug("기억 추출 LLM 호출")
-
-        if prompt_callback:
-            prompt_callback("memory", prompt)
-
-        result = client.call_llm(
-            messages=[
-                {"role": "system", "content": "기억 추출기. JSON만 반환하세요."},
-                {"role": "user", "content": prompt},
-            ],
-            tools=[],
-            use_stream=False,
-            mute=True,
-            response_format={
-                "type": "json_schema",
-                "json_schema": {
-                    "name": "memory_extraction",
-                    "schema": {
-                        "type": "object",
-                        "properties": {
-                            "memories": {
-                                "type": "array",
-                                "items": {
-                                    "type": "object",
-                                    "properties": {
-                                        "content": {"type": "string"},
-                                        "importance": {
-                                            "type": "number",
-                                            "minimum": 0.0,
-                                            "maximum": 1.0,
-                                        },
-                                    },
-                                    "required": ["content"],
-                                },
-                            },
-                        },
-                        "required": ["memories"],
-                    },
-                },
-            },
-        ).content
-
-        self._log_debug(f"LLM 응답: {result}")
-
-        try:
-            data = json.loads(result)
-            memories = data.get("memories", [])
-            self._log_debug(f"추출된 기억: {len(memories)}개")
-        except (json.JSONDecodeError, AttributeError) as e:
-            reason = provider_error_reason(result)
-            if reason:
-                # 파싱 실패로 뭉뚱그리면 프로바이더 장애가 데이터 문제로 보인다.
-                self._log_debug(f"프로바이더 거부 — 기억 추출을 건너뜀: {reason}")
-            else:
-                self._log_debug(f"JSON 파싱 실패: {e}")
-            return
+        candidates = extractor.extract(user_input, character_response, history_context)
+        self._log_debug(f"추출된 기억: {len(candidates)}개")
 
         now = time.time()
-        for i, mem in enumerate(memories):
-            content = mem.get("content", "")
-            importance = mem.get("importance", 0.5)
-            if not content:
-                continue
-
+        for i, candidate in enumerate(candidates):
             self._log_debug(
-                f"기억 [{i + 1}/{len(memories)}] 처리 중: '{content}' (importance: {importance})"
+                f"기억 [{i + 1}/{len(candidates)}] 처리 중: "
+                f"'{candidate.content}' (importance: {candidate.importance})"
             )
-
-            conflict = self._check_conflict(content, client, prompt_callback)
-            if conflict == "IDENTICAL":
-                self._log_debug("IDENTICAL: 기존 기억 갱신")
-                for entry in self._memories.values():
-                    if float(np.dot(self._embedding_fn(content), entry.embedding)) > 0.7:
-                        entry.last_accessed = now
-                        entry.access_count += 1
-                        break
-            elif conflict == "SIMILAR":
-                self._log_debug("SIMILAR: 기존 기억 병합")
-                for entry in self._memories.values():
-                    if float(np.dot(self._embedding_fn(content), entry.embedding)) > 0.7:
-                        old_content = entry.content
-                        entry.content = content
-                        entry.weight = max(entry.weight, importance)
-                        entry.last_accessed = now
-                        self._log_debug(f"  '{old_content}' -> '{content}'")
-                        break
-            else:
-                self._log_debug("DIFFERENT: 새 기억 추가")
-                embedding = self._embedding_fn(content)
-                entry = MemoryEntry(
-                    id=str(uuid.uuid4()),
-                    content=content,
-                    embedding=embedding,
-                    weight=importance,
-                    emotion_tags=dict(emotions),
-                    access_count=0,
-                    last_accessed=now,
-                    created_at=now,
-                )
-                self._memories[entry.id] = entry
-                self._log_debug(f"  새 기억 추가: id={entry.id}, content='{content}'")
+            self._absorb(candidate, emotions, classifier, now)
 
         self._log_debug(f"총 기억 개수: {len(self._memories)}")
+
+    def _absorb(self, candidate, emotions: dict[str, float], classifier, now: float) -> None:
+        """후보 하나를 기존 기억에 흡수하거나 새로 추가한다."""
+        # 분석 층도 빈 내용을 거르지만, 빈 기억을 만들지 않는 것은 도메인의 불변식이다.
+        # 어느 경로로 들어오든 지켜야 한다.
+        if not candidate.content:
+            return
+
+        embedding = self._embedding_fn(candidate.content)
+        nearest, score = self._nearest(embedding)
+
+        # 충분히 가까운 기억이 없으면 판정을 물을 이유가 없다. 호출을 아낀다.
+        if nearest is None or score < SIMILAR_MEMORY_THRESHOLD:
+            self._log_debug(f"유사도 {score:.4f} < {SIMILAR_MEMORY_THRESHOLD} -> 새 기억 추가")
+            self._insert(candidate, embedding, emotions, now)
+            return
+
+        classification = classifier.classify(nearest.content, candidate.content)
+        self._log_debug(f"분류 결과: {classification}")
+
+        if classification == "IDENTICAL":
+            # 같은 정보다. 내용은 그대로 두고 참조 기록만 남긴다.
+            nearest.last_accessed = now
+            nearest.access_count += 1
+        elif classification == "SIMILAR":
+            # 관련 있지만 더 새로운 정보다. 내용을 갱신하되 중요도는 낮추지 않는다.
+            self._log_debug(f"  '{nearest.content}' -> '{candidate.content}'")
+            nearest.content = candidate.content
+            nearest.weight = max(nearest.weight, candidate.importance)
+            nearest.last_accessed = now
+        else:
+            self._insert(candidate, embedding, emotions, now)
+
+    def _nearest(self, embedding) -> tuple[MemoryEntry | None, float]:
+        """임베딩과 가장 가까운 기억과 그 유사도를 반환한다."""
+        best, best_score = None, -1.0
+        for entry in self._memories.values():
+            score = float(np.dot(embedding, entry.embedding))
+            if score > best_score:
+                best, best_score = entry, score
+        return best, best_score
+
+    def _insert(self, candidate, embedding, emotions: dict[str, float], now: float) -> None:
+        entry = MemoryEntry(
+            id=str(uuid.uuid4()),
+            content=candidate.content,
+            embedding=embedding,
+            weight=candidate.importance,
+            emotion_tags=dict(emotions),
+            access_count=0,
+            last_accessed=now,
+            created_at=now,
+        )
+        self._memories[entry.id] = entry
+        self._log_debug(f"  새 기억 추가: id={entry.id}, content='{candidate.content}'")
