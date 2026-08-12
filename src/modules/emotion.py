@@ -3,6 +3,8 @@ import time
 from collections.abc import Callable
 from pathlib import Path
 
+from src.validity import provider_error_reason
+
 
 # ANSI 색상 코드
 class Colors:
@@ -248,7 +250,12 @@ class EmotionModule:
                         self._emotions[name] = value
                         self._log_debug(f"  감정 '{name}' 추가: {value:.3f}")
         except (json.JSONDecodeError, AttributeError) as e:
-            self._log_debug(f"JSON 파싱 실패: {e}")
+            reason = provider_error_reason(result)
+            if reason:
+                # 파싱 실패로 뭉뚱그리면 프로바이더 장애가 데이터 문제로 보인다.
+                self._log_debug(f"프로바이더 거부 — 감정 갱신을 건너뜀: {reason}")
+            else:
+                self._log_debug(f"JSON 파싱 실패: {e}")
 
         self._log_debug(f"최종 감정 상태: {self._emotions}")
 

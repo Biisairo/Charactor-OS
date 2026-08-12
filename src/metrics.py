@@ -13,6 +13,8 @@ import time
 from collections.abc import Callable
 from dataclasses import dataclass, field
 
+from src.validity import provider_error_reason
+
 
 @dataclass(frozen=True)
 class CallRecord:
@@ -28,6 +30,12 @@ class CallRecord:
     # 수집 여부는 CallMeter.capture_payload가 정한다.
     messages: list | None = None
     response: str = ""
+    # 프로바이더가 usage를 돌려줬는가. False면 위 토큰 수는 "0"이 아니라 "미상"이다.
+    # 둘을 뭉뚱그리면 비용이 과소 추정되었는지 판단할 수 없다 (REQ-12-1).
+    usage_known: bool = True
+    # 응답이 캐릭터 발화가 아니라 프로바이더 거부인가 (REQ-12-5).
+    # 거부는 과금되지 않아 토큰 0으로 오므로, 표시하지 않으면 usage 누락과 섞인다.
+    refused: bool = False
 
     @property
     def failed(self) -> bool:
@@ -67,12 +75,14 @@ class MeteredClient:
                     duration_ms=(time.perf_counter() - started) * 1000,
                     error=f"{type(exc).__name__}: {exc}",
                     messages=messages,
+                    usage_known=False,
                 )
             )
             raise
 
         duration_ms = (time.perf_counter() - started) * 1000
         usage = getattr(result, "usage", None)
+        content = getattr(result, "content", "") or ""
         self._meter.record(
             CallRecord(
                 label=self._label,
@@ -81,7 +91,11 @@ class MeteredClient:
                 total_tokens=getattr(usage, "total_tokens", 0) or 0,
                 duration_ms=duration_ms,
                 messages=messages,
-                response=getattr(result, "content", "") if self._meter.capture_payload else "",
+                response=content if self._meter.capture_payload else "",
+                usage_known=usage is not None,
+                # 판별은 여기서 한다. 모든 호출이 이 지점을 지나므로 라벨을 가리지 않고
+                # 잡힌다 — 호출 지점마다 검사를 심으면 한 곳만 빠뜨려도 조용히 샌다.
+                refused=provider_error_reason(content) is not None,
             )
         )
         return result
@@ -143,9 +157,20 @@ class CallMeter:
         for bucket in by_label.values():
             bucket["duration_ms"] = round(bucket["duration_ms"], 1)
 
+        # 비용이 과소 추정되는 경우는 "청구됐을 텐데 usage가 없는" 호출뿐이다.
+        # 거부·실패는 청구되지 않으므로 usage가 없어도 하한 경고의 근거가 아니다.
+        # 셋을 뭉뚱그리면 정상 턴마다 오경보가 뜬다 — 실측에서 확인했다.
+        unaccounted = sum(
+            1 for r in self._records if not r.usage_known and not r.refused and not r.failed
+        )
+
         return {
             "calls": len(self._records),
             "failed_calls": sum(1 for r in self._records if r.failed),
+            # 성공했고 거부도 아닌데 usage가 없는 호출. 있으면 토큰 합계는 하한이다.
+            "unknown_usage_calls": unaccounted,
+            "refused_calls": sum(1 for r in self._records if r.refused),
+            "tokens_are_lower_bound": unaccounted > 0,
             "prompt_tokens": sum(r.prompt_tokens for r in self._records),
             "completion_tokens": sum(r.completion_tokens for r in self._records),
             "total_tokens": sum(r.total_tokens for r in self._records),

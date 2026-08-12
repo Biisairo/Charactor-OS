@@ -166,6 +166,10 @@ class CharacterOS:
             module="orchestrator",
         )
 
+        # 정적 자산의 로드 문제를 드러낸다 (REQ-06-1).
+        # 조용히 넘기면 프롬프트 품질이 원인 불명으로 떨어진다.
+        self._report_asset_issues()
+
         # 동적 데이터 로드
         self._log("[모듈 로드] emotion 로드 중...", module="orchestrator")
         self.emotion.load()
@@ -217,6 +221,29 @@ class CharacterOS:
         self._log("=" * 60, module="orchestrator")
         self._log("CharacterOS 초기화 완료", module="orchestrator")
         self._log("=" * 60, module="orchestrator")
+
+    def _report_asset_issues(self) -> None:
+        """정적 자산 모듈이 모은 로드 문제를 로그로 올린다 (REQ-06-1 · 06-3).
+
+        의도된 폴백과 예기치 않은 실패를 다른 말로 적는다. 실패는 사용자에게도
+        보인다 — 예시가 조용히 0개가 되는 것이 원래 문제였다.
+        """
+        issues = [
+            *self.knowledge.load_issues,
+            *self.fewshot.load_issues,
+        ]
+        if not issues:
+            return
+
+        failures = [i for i in issues if not i.expected]
+        for issue in issues:
+            self._log(f"[모듈 로드] {issue.describe()}", module="orchestrator")
+
+        if failures:
+            self._output(
+                f"경고: 정적 자산 {len(failures)}건을 읽지 못했습니다 — "
+                + ", ".join(i.filename for i in failures)
+            )
 
     def _log(
         self, message: str, module: str = "orchestrator", data: dict | str | None = None

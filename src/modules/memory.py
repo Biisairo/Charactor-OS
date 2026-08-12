@@ -8,6 +8,8 @@ from pathlib import Path
 
 import numpy as np
 
+from src.validity import provider_error_reason
+
 
 # ANSI 색상 코드
 class Colors:
@@ -319,7 +321,12 @@ JSON으로 반환: {{"classification": "IDENTICAL|SIMILAR|DIFFERENT"}}"""
             self._log_debug(f"분류 결과: {classification}")
             return classification
         except (json.JSONDecodeError, AttributeError) as e:
-            self._log_debug(f"JSON 파싱 실패: {e}")
+            reason = provider_error_reason(result)
+            if reason:
+                # 파싱 실패로 뭉뚱그리면 프로바이더 장애가 데이터 문제로 보인다.
+                self._log_debug(f"프로바이더 거부 — 충돌 판정을 DIFFERENT로 처리: {reason}")
+            else:
+                self._log_debug(f"JSON 파싱 실패: {e}")
             return "DIFFERENT"
 
     def update(
@@ -431,7 +438,12 @@ JSON으로 반환: {{"classification": "IDENTICAL|SIMILAR|DIFFERENT"}}"""
             memories = data.get("memories", [])
             self._log_debug(f"추출된 기억: {len(memories)}개")
         except (json.JSONDecodeError, AttributeError) as e:
-            self._log_debug(f"JSON 파싱 실패: {e}")
+            reason = provider_error_reason(result)
+            if reason:
+                # 파싱 실패로 뭉뚱그리면 프로바이더 장애가 데이터 문제로 보인다.
+                self._log_debug(f"프로바이더 거부 — 기억 추출을 건너뜀: {reason}")
+            else:
+                self._log_debug(f"JSON 파싱 실패: {e}")
             return
 
         now = time.time()

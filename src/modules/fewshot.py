@@ -3,6 +3,8 @@ from pathlib import Path
 
 import yaml
 
+from src.modules.asset_issue import AssetLoadIssue
+
 
 @dataclass
 class FewShotExample:
@@ -50,10 +52,18 @@ class FewShotModule:
         self._dir = Path(examples_dir)
         self._embedding_fn = embedding_fn
         self._groups: list[FewShotGroup] = []
+        self._load_issues: list[AssetLoadIssue] = []
+        self._embedding_failed = False
+
+    @property
+    def load_issues(self) -> list[AssetLoadIssue]:
+        """마지막 `load_all()`에서 생긴 문제들. 오케스트레이터가 읽어 로그로 올린다."""
+        return list(self._load_issues)
 
     def load_all(self) -> None:
         """examples/ 디렉토리의 모든 YAML을 로드한다."""
         self._groups = []
+        self._load_issues = []
 
         if not self._dir.exists():
             return
@@ -87,8 +97,16 @@ class FewShotModule:
             if examples:
                 self._groups.append(FewShotGroup(tag=tag, examples=examples))
 
-        except Exception:
-            pass  # 파싱 실패 시 무시
+        except Exception as e:
+            # 조용히 넘기면 예시가 0개가 된 이유를 아무도 알 수 없다 (REQ-06-1).
+            # 다른 파일의 로드는 막지 않는다 (REQ-06-2).
+            self._load_issues.append(
+                AssetLoadIssue(
+                    filename=path.name,
+                    reason=f"{type(e).__name__}: {e}",
+                    expected=False,
+                )
+            )
 
     def search(
         self,
@@ -140,8 +158,18 @@ class FewShotModule:
                         example_vec = self._embedding_fn(example.user)
                         embedding_score = float(np.dot(query_vec, example_vec))
                         embedding_score = max(0.0, embedding_score)  # 음수 제거
-                    except Exception:
-                        pass
+                    except Exception as e:
+                        # 임베딩이 죽으면 검색이 태그 매칭으로 조용히 퇴화한다.
+                        # 검색마다 기록하면 로그가 넘치므로 처음 1회만 남긴다.
+                        if not self._embedding_failed:
+                            self._embedding_failed = True
+                            self._load_issues.append(
+                                AssetLoadIssue(
+                                    filename="(임베딩)",
+                                    reason=f"{type(e).__name__}: {e} — 태그 매칭으로 퇴화",
+                                    expected=False,
+                                )
+                            )
 
                 # 최종 점수
                 if self._embedding_fn:

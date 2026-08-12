@@ -2,6 +2,8 @@ from pathlib import Path
 
 import yaml
 
+from src.modules.asset_issue import AssetLoadIssue
+
 
 class KnowledgeModule:
     """캐릭터가 속한 세계관, 관계, 타임라인, 장소 등 구조화된 지식을 관리한다.
@@ -20,6 +22,17 @@ class KnowledgeModule:
         self._timeline: list[dict] = []
         self._locations: list[dict] = []
         self._freeform: list[tuple[str, str]] = []  # (filename, content)
+        self._load_issues: list[AssetLoadIssue] = []
+
+    @property
+    def load_issues(self) -> list[AssetLoadIssue]:
+        """마지막 `load_all()`에서 생긴 문제들.
+
+        구조화 파싱 실패는 freeform 폴백이라는 **의도된 동작**이므로
+        `expected=True`로 표시된다. 예기치 않은 실패와 섞이면 로그를 봐도
+        무엇이 문제인지 알 수 없다 (REQ-06-3).
+        """
+        return list(self._load_issues)
 
     def load_all(self) -> None:
         """지식 디렉토리의 모든 파일을 로드하여 구조화/비구조화 데이터를 저장한다."""
@@ -29,6 +42,7 @@ class KnowledgeModule:
         self._timeline = []
         self._locations = []
         self._freeform = []
+        self._load_issues = []
 
         if not self._dir.exists():
             return
@@ -54,8 +68,16 @@ class KnowledgeModule:
                     if isinstance(data, dict) and "type" in data:
                         self._classify_structured(data, item.name)
                         continue
-                except Exception:
-                    pass  # 파싱 실패 시 freeform으로 처리
+                except Exception as e:
+                    # 설계된 폴백이다. 다만 기록은 남긴다 — 구조화를 의도했는데
+                    # freeform으로 떨어진 파일을 나중에 알아볼 수 있어야 한다.
+                    self._load_issues.append(
+                        AssetLoadIssue(
+                            filename=item.name,
+                            reason=f"{type(e).__name__}: {e} — freeform으로 처리",
+                            expected=True,
+                        )
+                    )
 
             # 자유 형식
             content = item.read_text(encoding="utf-8")

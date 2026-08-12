@@ -106,7 +106,20 @@ def format_trace(trace: PipelineTrace | None) -> str:
             f"      토큰  입력 {m['prompt_tokens']:,} / 출력 {m['completion_tokens']:,}"
             f" / 합계 {m['total_tokens']:,}"
         )
-        lines.append(f"      비용  {format_cost(m.get('cost_usd'))}")
+        cost_line = f"      비용  {format_cost(m.get('cost_usd'))}"
+        if m.get("tokens_are_lower_bound"):
+            cost_line += "  (하한 — usage 미상 호출 있음)"
+        lines.append(cost_line)
+
+        # 정상 턴에서는 아무것도 덧붙이지 않는다. 0을 매번 찍으면 신호가 묻힌다.
+        flags = []
+        if m.get("unknown_usage_calls"):
+            flags.append(f"usage 미상 {m['unknown_usage_calls']}회")
+        if m.get("refused_calls"):
+            flags.append(f"프로바이더 거부 {m['refused_calls']}회")
+        if flags:
+            lines.append(f"      주의  {' · '.join(flags)}")
+
         for label, bucket in m.get("by_label", {}).items():
             lines.append(
                 f"      {label:<11} {bucket['calls']}회"
