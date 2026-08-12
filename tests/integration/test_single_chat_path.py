@@ -135,8 +135,8 @@ class TestReflectionOnChatPath:
         mock_run = AsyncMock(side_effect=lambda fn: fn())
 
         with (
-            patch("src.api.server._get_cos", return_value=cos),
-            patch("src.api.server._run_in_worker", mock_run),
+            patch("src.api.deps.get_cos", return_value=cos),
+            patch("src.api.deps.run_in_worker", mock_run),
         ):
             transport = ASGITransport(app=app)
             async with AsyncClient(transport=transport, base_url="http://test") as http:

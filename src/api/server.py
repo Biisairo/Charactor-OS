@@ -1,21 +1,20 @@
 """Character OS — FastAPI REST 서버.
 
-대화 경로는 `POST /chat` 하나다. 스트리밍(WebSocket) 경로는 제거했다 —
+이 모듈은 **앱을 조립하기만 한다.** 엔드포인트는 도메인별 라우터에 있다.
+
+    routers/diagnostics.py   헬스체크 · 디버그 로그 · 트레이스 · 성능
+    routers/chat.py          대화
+    routers/state.py         감정 · 기억 · 히스토리 · 초기화
+    routers/characters.py    캐릭터 목록/생성/삭제/전환 · 페르소나
+    routers/knowledge.py     세계관 · 관계 · 연표 · 장소 · few-shot
+    routers/frontend.py      SPA 정적 파일 (반드시 마지막)
+
+대화 경로는 `POST /api/chat` 하나다. 스트리밍(WebSocket) 경로는 제거했다 —
 검토를 거치지 않은 초안이 사용자에게 도달하는 통로였다 (TASK-11).
 
-엔드포인트:
-    POST  /chat                대화 (전체 응답, 실패 시 502)
-    GET   /health              헬스체크
-    GET   /emotion             감정 상태 조회
-    GET   /memory/stats        기억 통계
-    POST  /character/reset     캐릭터 초기화 (기억/감정)
-    GET   /persona             페르소나 조회
-    PUT   /persona             페르소나 수정
-    GET   /knowledge           지식 파일 목록
-    GET   /knowledge/{name}    지식 파일 내용
-    PUT   /knowledge/{name}    지식 파일 수정
-    GET   /docs                Swagger UI
-    GET   /*                   프론트엔드 (정적 파일)
+**등록 순서가 동작을 바꾼다.** FastAPI는 먼저 등록된 라우트를 먼저 매칭하므로
+`frontend`의 catch-all이 앞서면 모든 API가 가려진다.
+`tests/integration/test_api_surface.py`가 경로 목록과 순서 제약을 지킨다.
 
 실행:
     uv run uvicorn src.api.server:app --reload
@@ -24,189 +23,50 @@
 from __future__ import annotations
 
 import argparse
-import asyncio
-import os
-import re
-import shutil
-import threading
-import time
-from collections.abc import Callable
 from contextlib import asynccontextmanager
-from pathlib import Path
-from queue import Empty, Queue
 
-import yaml
-from fastapi import FastAPI, HTTPException
-from fastapi.responses import FileResponse
-from fastapi.staticfiles import StaticFiles
-from pydantic import BaseModel
+from fastapi import FastAPI
 
+from src.api import deps
+from src.api.deps import DEFAULT_CONFIG, load_config
+from src.api.paths import SAFE_FILENAME, SAFE_SEGMENT, safe_child
+from src.api.routers import characters, chat, diagnostics, frontend, knowledge, state
+from src.api.worker import CharacterWorker
 from src.call_log import from_config as call_logger_from_config
 from src.character_os import CharacterOS
 
-# ---------------------------------------------------------------------------
-# CharacterWorker — 캐릭터별 전용 스레드 + 큐
-# ---------------------------------------------------------------------------
-
-
-class CharacterWorker:
-    """CharacterOS를 전용 스레드에서 순차 처리하는 워커.
-
-    대화 요청은 큐에 들어가고, 전용 스레드가 하나씩 처리한다.
-    상태 읽기(emotion, memory 등)는 직접 읽어도 안전하다
-    (파이썬 GIL + 워커가 읽기 사이에 yield하지 않음).
-    """
-
-    def __init__(self, cos: CharacterOS):
-        self.cos = cos
-        self._queue: Queue = Queue()
-        self._thread = threading.Thread(target=self._run, daemon=True)
-        self._thread.start()
-
-    def _run(self) -> None:
-        """전용 스레드: 큐에서 작업을 꺼내 순차 실행."""
-        while True:
-            try:
-                item = self._queue.get(timeout=1.0)
-            except Empty:
-                continue
-
-            if item is None:  # shutdown signal
-                break
-
-            loop, future, fn = item
-            try:
-                result = fn()
-                loop.call_soon_threadsafe(future.set_result, result)
-            except Exception as e:
-                loop.call_soon_threadsafe(future.set_exception, e)
-
-    def submit(self, fn: Callable) -> tuple[asyncio.AbstractEventLoop, asyncio.Future]:
-        """함수를 큐에 제출하고 (loop, future)를 반환한다."""
-        loop = asyncio.get_running_loop()
-        future = loop.create_future()
-        self._queue.put((loop, future, fn))
-        return loop, future
-
-    async def run(self, fn: Callable) -> any:
-        """함수를 큐에 제출하고 결과를 기다린다 (async)."""
-        _, future = self.submit(fn)
-        return await future
-
-    def shutdown(self) -> None:
-        """워커 종료."""
-        self._queue.put(None)
-        self._thread.join(timeout=5)
-
-
-# ---------------------------------------------------------------------------
-# 설정
-# ---------------------------------------------------------------------------
-
-DEFAULT_CONFIG = {
-    "character_dir": "characters/hong-gil-dong",
-    "memory_db_path": "memory/memories.db",
-    "emotion_save_path": "memory/emotions.json",
-    "history_save_path": "memory/history.json",
-    "model_type": "api",
-    "local_model": "mlx-community/Qwen3.5-4B-MLX-4bit",
-    "adapter_path": None,
-}
-
-
-def _load_config(path: str) -> dict:
-    config_file = Path(path)
-    if config_file.exists():
-        with open(config_file, encoding="utf-8") as f:
-            return yaml.safe_load(f) or {}
-    return {}
-
-
-# ---------------------------------------------------------------------------
-# 경로 안전성
-#
-# character_id, 지식 파일명 등은 URL/요청 본문에서 오는 값이므로 그대로
-# 경로에 붙이면 "../../etc/passwd" 같은 입력으로 디렉토리를 벗어날 수 있다.
-# 형식 검증(허용 문자만)과 resolve 후 위치 확인을 함께 적용한다.
-# ---------------------------------------------------------------------------
-
-CHARACTERS_DIR = Path("characters")
-
-# 캐릭터 디렉토리명: 영숫자·한글·밑줄·하이픈만 (점·슬래시 불가)
-SAFE_SEGMENT = re.compile(r"[A-Za-z0-9가-힣_-]+")
-# 지식 파일명: 위 문자 + 허용된 확장자
-SAFE_FILENAME = re.compile(r"[A-Za-z0-9가-힣_-]+\.(yaml|yml|json|md|txt)")
-
-
-def _safe_child(base: Path, segment: str, pattern: re.Pattern[str]) -> Path:
-    """`base` 바로 아래에 있는 경로를 검증하여 반환한다.
-
-    형식 검증과 위치 확인을 모두 통과해야 한다. 형식 검증만으로도 충분하지만,
-    resolve 후 부모가 `base`인지 재확인하여 심볼릭 링크 우회까지 막는다.
-
-    Raises:
-        HTTPException: 형식이 맞지 않거나 `base`를 벗어나는 경우 400.
-    """
-    if not pattern.fullmatch(segment):
-        raise HTTPException(status_code=400, detail=f"허용되지 않는 이름입니다: {segment}")
-
-    resolved = (base / segment).resolve()
-    if resolved.parent != base.resolve():
-        raise HTTPException(status_code=400, detail=f"허용되지 않는 경로입니다: {segment}")
-    return resolved
-
-
-# ---------------------------------------------------------------------------
-# CharacterWorker 싱글톤 (lifespan에서 초기화)
-# ---------------------------------------------------------------------------
-
-_worker: CharacterWorker | None = None
-_config: dict = {}
+__all__ = ["app", "lifespan", "CharacterWorker", "SAFE_FILENAME", "SAFE_SEGMENT", "safe_child"]
 
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     """서버 시작 시 CharacterWorker 초기화, 종료 시 정리."""
-    global _worker, _config
-    _config = dict(DEFAULT_CONFIG)
-    _config.update(_load_config("config.yaml"))
+    config = dict(DEFAULT_CONFIG)
+    config.update(load_config("config.yaml"))
+    deps.set_config(config)
+
     cos = CharacterOS(
-        character_dir=_config["character_dir"],
-        memory_db_path=_config["memory_db_path"],
-        emotion_save_path=_config["emotion_save_path"],
-        history_save_path=_config["history_save_path"],
-        model_type=_config["model_type"],
-        local_model=_config["local_model"],
-        adapter_path=_config["adapter_path"],
+        character_dir=config["character_dir"],
+        memory_db_path=config["memory_db_path"],
+        emotion_save_path=config["emotion_save_path"],
+        history_save_path=config["history_save_path"],
+        model_type=config["model_type"],
+        local_model=config["local_model"],
+        adapter_path=config["adapter_path"],
         debug=True,
         trace=True,
-        call_logger=call_logger_from_config(_config),
+        call_logger=call_logger_from_config(config),
     )
-    _worker = CharacterWorker(cos)
+    deps.set_worker(CharacterWorker(cos))
     yield
-    _worker.shutdown()
+    worker = deps.get_worker()
+    if worker is not None:
+        worker.shutdown()
     # 종료 시 큐에 남은 호출 로그를 디스크까지 밀어낸다.
     # atexit에도 걸려 있지만, 서버 수명주기에서 명시적으로 비우는 편이 확실하다.
     cos._call_logger.shutdown()
-    _worker = None
+    deps.set_worker(None)
 
-
-def _get_cos() -> CharacterOS:
-    if _worker is None:
-        raise RuntimeError("CharacterOS not initialized")
-    return _worker.cos
-
-
-async def _run_in_worker(fn: Callable) -> any:
-    """CharacterWorker에서 함수를 실행하고 결과를 반환한다."""
-    if _worker is None:
-        raise RuntimeError("CharacterOS not initialized")
-    return await _worker.run(fn)
-
-
-# ---------------------------------------------------------------------------
-# FastAPI 앱
-# ---------------------------------------------------------------------------
 
 app = FastAPI(
     title="Character OS API",
@@ -215,604 +75,19 @@ app = FastAPI(
     lifespan=lifespan,
 )
 
-
-# ---------------------------------------------------------------------------
-# 요청/응답 모델
-# ---------------------------------------------------------------------------
-
-
-class ChatRequest(BaseModel):
-    message: str
-
-
-class ChatResponse(BaseModel):
-    response: str | None
-    emotion: dict | None = None
-
-
-class ResetRequest(BaseModel):
-    memory: bool = True
-    emotion: bool = True
-    history: bool = False
-
-
-class PersonaUpdate(BaseModel):
-    name: str | None = None
-    identity: str | None = None
-    age: int | str | None = None
-    gender: str | None = None
-    occupation: str | None = None
-    personality: dict | list[str] | None = None
-    speaking_style: dict | str | None = None
-    values: list[str] | None = None
-    backstory: str | None = None
-    likes: list[str] | None = None
-    dislikes: list[str] | None = None
-    fears: list[str] | None = None
-    goals: list[str] | None = None
-    behavior: dict | None = None
-    emotion_triggers: list[dict] | None = None
-    relationships: list[dict] | None = None
-    inner_world: dict | None = None
-    examples: list[dict] | None = None
-
-
-class KnowledgeUpdate(BaseModel):
-    content: str
-
-
-# ---------------------------------------------------------------------------
-# API 엔드포인트 (SPA 라우트보다앞에 정의)
-# ---------------------------------------------------------------------------
-
-
-@app.get("/api/health")
-def health():
-    """헬스체크."""
-    return {"status": "ok"}
-
-
-@app.post("/api/chat", response_model=ChatResponse)
-async def chat(req: ChatRequest):
-    """대화 — 워커 스레드에서 순차 처리."""
-    cos = _get_cos()
-
-    def _do_chat():
-        response = cos.chat(req.message)
-        emotion = cos.emotion.get_state()
-        return ChatResponse(response=response, emotion=emotion)
-
-    result = await _run_in_worker(_do_chat)
-
-    # chat()은 턴이 실패하면 None을 돌려준다 (프로바이더 거부, Stage 실패 등).
-    # 캐릭터 발화가 아니므로 200으로 내보내지 않는다 — 실패는 실패로 드러나야 한다.
-    if result.response is None:
-        raise HTTPException(
-            status_code=502, detail="응답 생성에 실패했습니다. 잠시 후 다시 시도해 주세요."
-        )
-
-    return result
-
-
-@app.get("/api/emotion")
-def get_emotion():
-    """현재 감정 상태 조회."""
-    cos = _get_cos()
-    return cos.emotion.get_state()
-
-
-@app.get("/api/memory/stats")
-def memory_stats():
-    """기억 통계."""
-    cos = _get_cos()
-    return {"count": cos.memory.snapshot_count()}
-
-
-@app.get("/api/memory")
-def list_memory():
-    """저장된 기억 목록."""
-    cos = _get_cos()
-    memories = []
-    for _key, entry in cos.memory._memories.items():
-        memories.append(
-            {
-                "id": entry.id,
-                "content": entry.content,
-                "weight": round(entry.weight, 3),
-                "emotion_tags": entry.emotion_tags,
-                "access_count": entry.access_count,
-                "created_at": entry.created_at,
-            }
-        )
-    # 최근순 정렬
-    memories.sort(key=lambda x: x["created_at"], reverse=True)
-    return {"memories": memories}
-
-
-@app.get("/api/history")
-def get_history():
-    """대화 기록 조회."""
-    cos = _get_cos()
-    turns = []
-    for turn in cos.history._turns:
-        turns.append(
-            {
-                "role": "user" if turn.role == "user" else "assistant",
-                "content": turn.content,
-                "timestamp": turn.timestamp,
-            }
-        )
-    return {"turns": turns}
-
-
-@app.get("/api/debug")
-def get_debug_logs():
-    """디버그 로그 조회."""
-    cos = _get_cos()
-    return {"logs": cos._debug_logs, "enabled": cos._debug}
-
-
-@app.post("/api/debug/toggle")
-def toggle_debug():
-    """디버그 모드 토글."""
-    cos = _get_cos()
-    cos._debug = not cos._debug
-    return {"enabled": cos._debug}
-
-
-@app.post("/api/debug/clear")
-def clear_debug_logs():
-    """디버그 로그 삭제."""
-    cos = _get_cos()
-    cos._debug_logs.clear()
-    return {"status": "ok"}
-
-
-@app.get("/api/trace/last")
-def get_last_trace():
-    """마지막 파이프라인 트레이스 조회."""
-    cos = _get_cos()
-    if cos._last_trace is None:
-        return {"trace": None}
-    return {"trace": cos._last_trace.to_dict()}
-
-
-# ---------------------------------------------------------------------------
-# 다중 캐릭터 API
-# ---------------------------------------------------------------------------
-
-
-@app.get("/api/characters")
-def list_characters():
-    """사용 가능한 캐릭터 목록을 반환한다."""
-    characters_dir = Path("characters")
-    if not characters_dir.exists():
-        return {"characters": [], "active": None}
-
-    result = []
-    for d in sorted(characters_dir.iterdir()):
-        persona_file = d / "persona.yaml"
-        if d.is_dir() and persona_file.exists():
-            try:
-                import yaml as _yaml
-
-                data = _yaml.safe_load(persona_file.read_text(encoding="utf-8")) or {}
-                result.append(
-                    {
-                        "id": d.name,
-                        "name": data.get("name", d.name),
-                        "identity": data.get("identity", ""),
-                    }
-                )
-            except Exception:
-                result.append({"id": d.name, "name": d.name, "identity": ""})
-
-    cos = _get_cos()
-    active_id = Path(cos._character_dir).name if cos._character_dir else None
-    return {"characters": result, "active": active_id}
-
-
-class SwitchCharacterRequest(BaseModel):
-    character_id: str
-
-
-@app.post("/api/character/switch")
-async def switch_character(req: SwitchCharacterRequest):
-    """캐릭터를 전환한다 — CharacterOS를 재생성한다."""
-    global _worker
-
-    character_dir = _safe_child(CHARACTERS_DIR, req.character_id, SAFE_SEGMENT)
-    if not character_dir.exists():
-        raise HTTPException(
-            status_code=404, detail=f"캐릭터를 찾을 수 없습니다: {req.character_id}"
-        )
-    if not (character_dir / "persona.yaml").exists():
-        raise HTTPException(status_code=400, detail=f"persona.yaml이 없습니다: {req.character_id}")
-
-    new_cos = CharacterOS(
-        character_dir=str(character_dir),
-        memory_db_path=_config.get("memory_db_path", "memory/memories.db"),
-        emotion_save_path=_config.get("emotion_save_path", "memory/emotions.json"),
-        history_save_path=_config.get("history_save_path", "memory/history.json"),
-        model_type=_config.get("model_type", "api"),
-        local_model=_config.get("local_model", "mlx-community/Qwen3.5-4B-MLX-4bit"),
-        adapter_path=_config.get("adapter_path"),
-        debug=True,
-        trace=True,
-    )
-
-    old_worker = _worker
-    _worker = CharacterWorker(new_cos)
-    if old_worker:
-        old_worker.shutdown()
-        old_worker.cos._call_logger.shutdown()
-
-    return {"status": "ok", "character": req.character_id}
-
-
-class CreateCharacterRequest(BaseModel):
-    name: str
-    identity: str = ""
-
-
-@app.post("/api/characters")
-def create_character(req: CreateCharacterRequest):
-    """새 캐릭터를 생성한다."""
-    import yaml as _yaml
-
-    # 디렉토리 이름: 이름을 kebab-case로 변환
-    char_id = re.sub(r"[^a-zA-Z0-9가-힣]", "-", req.name).strip("-").lower()
-    if not char_id:
-        char_id = f"character-{int(time.time())}"
-
-    char_dir = _safe_child(CHARACTERS_DIR, char_id, SAFE_SEGMENT)
-    if char_dir.exists():
-        raise HTTPException(status_code=409, detail=f"이미 존재하는 캐릭터입니다: {char_id}")
-
-    # 디렉토리 생성
-    char_dir.mkdir(parents=True)
-    (char_dir / "examples").mkdir()
-    (char_dir / "knowledge").mkdir()
-
-    # persona.yaml 템플릿 생성
-    persona_data = {
-        "name": req.name,
-        "identity": req.identity or f"{req.name}의 정체성",
-        "age": "",
-        "gender": "",
-        "occupation": "",
-        "personality": {
-            "traits": ["친절한"],
-            "big5": {
-                "openness": 0.5,
-                "conscientiousness": 0.5,
-                "extraversion": 0.5,
-                "agreeableness": 0.5,
-                "neuroticism": 0.5,
-            },
-        },
-        "speaking_style": {
-            "summary": "정중한 말투",
-            "tone": "차분한",
-            "vocabulary": "일상어",
-            "sentence_pattern": "보통 문장",
-            "fillers": [],
-            "emojis": "적게 사용",
-            "endings": ["~입니다", "~합니다"],
-        },
-        "values": [],
-        "backstory": "",
-        "likes": [],
-        "dislikes": [],
-        "fears": [],
-        "goals": [],
-        "behavior": {
-            "situations": [],
-            "topics": [],
-            "rules": [],
-        },
-        "emotion_triggers": [],
-        "relationships": [],
-        "inner_world": {
-            "current_thought": "",
-            "hidden_feelings": "",
-            "wants_to_say": "",
-        },
-        "examples": [
-            {"user": "안녕!", "character": "안녕하세요!", "scenario": "인사"},
-        ],
-    }
-
-    (char_dir / "persona.yaml").write_text(
-        _yaml.dump(persona_data, allow_unicode=True, default_flow_style=False, sort_keys=False),
-        encoding="utf-8",
-    )
-
-    return {"status": "ok", "character": char_id}
-
-
-@app.delete("/api/characters/{character_id}")
-def delete_character(character_id: str):
-    """캐릭터를 삭제한다. 활성 캐릭터는 삭제할 수 없다."""
-    cos = _get_cos()
-    char_dir = _safe_child(CHARACTERS_DIR, character_id, SAFE_SEGMENT)
-
-    # 활성 캐릭터 판정은 resolve된 경로로 비교한다 (이름 문자열 비교는 우회 가능)
-    active_dir = Path(cos._character_dir).resolve() if cos._character_dir else None
-    if active_dir is not None and char_dir == active_dir:
-        raise HTTPException(
-            status_code=400,
-            detail="활성 캐릭터는 삭제할 수 없습니다. 먼저 다른 캐릭터로 전환하세요.",
-        )
-
-    if not char_dir.exists():
-        raise HTTPException(status_code=404, detail=f"캐릭터를 찾을 수 없습니다: {character_id}")
-
-    shutil.rmtree(char_dir)
-    return {"status": "ok", "deleted": character_id}
-
-
-@app.get("/api/logs")
-def get_logs(level: str = "all", limit: int = 200):
-    """상세 로그 조회. level: all, error, info."""
-    cos = _get_cos()
-    logs = cos._debug_logs
-    if level == "error":
-        logs = [
-            line for line in logs if "실패" in line or "오류" in line or "error" in line.lower()
-        ]
-    return {"logs": logs[-limit:], "total": len(cos._debug_logs)}
-
-
-@app.get("/api/performance")
-def get_performance():
-    """성능 메트릭 조회 (트레이스 + 카운터)."""
-    cos = _get_cos()
-    trace_data = cos._last_trace.to_dict() if cos._last_trace else None
-    return {
-        "trace": trace_data,
-        "emotion_state": cos.emotion.get_state(),
-        "memory_count": cos.memory.snapshot_count(),
-        "history_count": cos.history.count(),
-    }
-
-
-@app.post("/api/character/reset")
-async def character_reset(req: ResetRequest):
-    """캐릭터 초기화 — 워커에서 순차 처리."""
-    cos = _get_cos()
-
-    def _do_reset():
-        import sqlite3 as _sqlite3
-
-        results = {}
-
-        if req.memory:
-            cos.memory._memories.clear()
-            conn = _sqlite3.connect(str(cos.memory._db_path))
-            try:
-                conn.execute("DELETE FROM memories")
-                conn.commit()
-            finally:
-                conn.close()
-            results["memory"] = "초기화 완료"
-
-        if req.emotion:
-            cos.emotion._emotions = {}
-            cos.emotion.save()
-            results["emotion"] = "초기화 완료"
-
-        if req.history:
-            cos.history._turns.clear()
-            cos.history.save()
-            results["history"] = "초기화 완료"
-
-        return {"status": "ok", "results": results}
-
-    return await _run_in_worker(_do_reset)
-
-
-@app.get("/api/persona")
-def get_persona():
-    """페르소나 조회 (파일에서다시로드)."""
-    cos = _get_cos()
-    cos.persona.load()  # 파일에서다시로드
-    return cos.persona._data
-
-
-@app.put("/api/persona")
-def update_persona(req: PersonaUpdate):
-    """페르소나 수정 — YAML 파일을 업데이트하고 다시 로드한다."""
-    cos = _get_cos()
-
-    # 현재 데이터와 병합
-    data = dict(cos.persona._data)
-    updates = req.model_dump(exclude_none=True)
-    data.update(updates)
-
-    # YAML 파일에 저장
-    persona_path = cos.persona._path
-    persona_path.parent.mkdir(parents=True, exist_ok=True)
-    with open(persona_path, "w", encoding="utf-8") as f:
-        yaml.dump(data, f, allow_unicode=True, default_flow_style=False)
-
-    # 다시 로드
-    cos.persona.load()
-
-    return {"status": "ok", "persona": cos.persona._data}
-
-
-@app.get("/api/knowledge")
-def list_knowledge():
-    """지식 파일 목록."""
-    cos = _get_cos()
-    knowledge_dir = cos.knowledge._dir
-
-    entries = []
-    if not knowledge_dir.exists():
-        return {"entries": entries}
-
-    for f in sorted(knowledge_dir.iterdir()):
-        if not f.is_file():
-            continue
-        ext = f.suffix.lower()
-        if ext not in cos.knowledge.SUPPORTED_EXTENSIONS:
-            continue
-        content = f.read_text(encoding="utf-8")
-        entries.append(
-            {
-                "name": f.name,
-                "size": len(content),
-                "preview": content[:100],
-            }
-        )
-
-    return {"entries": entries}
-
-
-@app.get("/api/knowledge/relationships")
-def get_relationships():
-    """관계 그래프 조회."""
-    cos = _get_cos()
-    cos.knowledge.load_all()
-    return {"relationships": cos.knowledge.get_relationships()}
-
-
-@app.get("/api/knowledge/relationships/{character}")
-def get_relationships_for(character: str):
-    """특정 캐릭터의 관계 조회."""
-    cos = _get_cos()
-    cos.knowledge.load_all()
-    return {"relationships": cos.knowledge.get_relationships_for(character)}
-
-
-@app.get("/api/knowledge/timeline")
-def get_timeline():
-    """타임라인 조회."""
-    cos = _get_cos()
-    cos.knowledge.load_all()
-    return {"events": cos.knowledge.get_timeline()}
-
-
-@app.get("/api/knowledge/locations")
-def get_locations():
-    """장소 목록 조회."""
-    cos = _get_cos()
-    cos.knowledge.load_all()
-    return {"locations": cos.knowledge.get_locations()}
-
-
-@app.get("/api/knowledge/{name}")
-def get_knowledge(name: str):
-    """지식 파일 내용 조회 (원본 텍스트)."""
-    cos = _get_cos()
-    knowledge_dir = cos.knowledge._dir
-
-    # 확장자 포함/미포함 모두 시도
-    for candidate in [
-        name,
-        f"{name}.yaml",
-        f"{name}.yml",
-        f"{name}.json",
-        f"{name}.md",
-        f"{name}.txt",
-    ]:
-        if not SAFE_FILENAME.fullmatch(candidate):
-            continue  # 확장자 없는 원본 name 등 — 다음 후보로
-        file_path = _safe_child(knowledge_dir, candidate, SAFE_FILENAME)
-        if file_path.is_file():
-            return {"content": file_path.read_text(encoding="utf-8")}
-
-    raise HTTPException(status_code=404, detail=f"지식 파일을 찾을 수 없습니다: {name}")
-
-
-@app.put("/api/knowledge/{name}")
-def update_knowledge(name: str, req: KnowledgeUpdate):
-    """지식 파일 수정."""
-    cos = _get_cos()
-
-    knowledge_dir = cos.knowledge._dir
-
-    # 쓰기는 확장자를 포함한 정확한 파일명만 허용한다
-    knowledge_dir.mkdir(parents=True, exist_ok=True)
-    file_path = _safe_child(knowledge_dir, name, SAFE_FILENAME)
-    file_path.write_text(req.content, encoding="utf-8")
-
-    # 다시 로드
-    cos.knowledge.load_all()
-
-    return {"status": "ok", "name": name, "size": len(req.content)}
-
-
-# ---------------------------------------------------------------------------
-# Few-shot 예시 API
-# ---------------------------------------------------------------------------
-
-
-@app.get("/api/fewshot")
-def list_fewshot():
-    """Few-shot 예시 태그 목록."""
-    cos = _get_cos()
-    tags = cos.fewshot.get_all_tags()
-    groups = []
-    for group in cos.fewshot.get_all_groups():
-        groups.append(
-            {
-                "tag": group.tag,
-                "count": len(group.examples),
-                "examples": [
-                    {"user": e.user, "character": e.character, "emotion_state": e.emotion_state}
-                    for e in group.examples
-                ],
-            }
-        )
-    return {"tags": tags, "groups": groups}
-
-
-@app.get("/api/fewshot/search")
-def search_fewshot(q: str = ""):
-    """Few-shot 예시 검색."""
-    cos = _get_cos()
-    if not q:
-        return {"results": []}
-    results = cos.fewshot.search(q, cos.emotion.get_state())
-    return {
-        "results": [
-            {"user": e.user, "character": e.character, "emotion_state": e.emotion_state}
-            for e in results
-        ]
-    }
-
-
-# ---------------------------------------------------------------------------
-# 프론트엔드 정적 파일 서빙 (SPA)
-# ---------------------------------------------------------------------------
-
-FRONTEND_DIR = Path(__file__).parent.parent.parent / "frontend" / "dist"
-
+# 순서 주의 — frontend의 catch-all이 마지막이어야 한다.
+app.include_router(diagnostics.router)
+app.include_router(chat.router)
+app.include_router(state.router)
+app.include_router(characters.router)
+app.include_router(knowledge.router)
+app.include_router(frontend.router)
 
 # 정적 파일 마운트 (CSS, JS, 이미지 등)
-if FRONTEND_DIR.exists():
-    app.mount("/assets", StaticFiles(directory=FRONTEND_DIR / "assets"), name="assets")
+if frontend.FRONTEND_DIR.exists():
+    from fastapi.staticfiles import StaticFiles
 
-
-@app.get("/{full_path:path}")
-async def serve_frontend(full_path: str):
-    """프론트엔드 정적 파일 서빙 (SPA fallback).
-
-    dist 디렉토리를 벗어나는 경로는 파일을 반환하지 않고 index.html로 폴백한다.
-    """
-    if not FRONTEND_DIR.exists():
-        return {"error": "Frontend not built. Run: cd frontend && npm run build"}
-
-    index = FRONTEND_DIR / "index.html"
-    base = FRONTEND_DIR.resolve()
-    target = (FRONTEND_DIR / full_path).resolve()
-
-    # dist 하위인지 확인 — 벗어나면 SPA 라우트로 간주하고 index.html
-    if not str(target).startswith(str(base) + os.sep) or not target.is_file():
-        return FileResponse(index)
-    return FileResponse(target)
+    app.mount("/assets", StaticFiles(directory=frontend.FRONTEND_DIR / "assets"), name="assets")
 
 
 # ---------------------------------------------------------------------------
