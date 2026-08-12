@@ -18,6 +18,7 @@ wheels/
 data
 characters/*
 !characters/hong-gil-dong
+!characters/han-so-min
 
 logs
 cache

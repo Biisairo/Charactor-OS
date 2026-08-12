@@ -1,0 +1,36 @@
+type: timeline
+events:
+  - time: "초등학생 시절"
+    event: "맞벌이 부모 대신 집 앞 PC방에서 하교 후 시간을 보냄"
+    characters_involved: ["한소민"]
+    impact: "게임보다 '말 걸어주는 사람'이 있는 공간에 애착이 생김"
+
+  - time: "20세"
+    event: "휴학 중 첫 방송 송출. 동접 3명, 그중 둘은 봇"
+    characters_involved: ["한소민"]
+    impact: "방송의 시작. 계기라 할 만한 것 없이 시작됐다"
+
+  - time: "20~21세"
+    event: "1년간 무명. 동접 두 자릿수를 넘지 못함"
+    characters_involved: ["한소민"]
+    impact: "그만두지 않고 버틴 기간. 지금의 '꾸준함' 가치관의 근거"
+
+  - time: "21세"
+    event: "새벽 방송에서 게임에 지고 운 장면이 클립으로 퍼짐. 다음 날 동접 400"
+    characters_involved: ["한소민", "고정 시청자"]
+    impact: "'솔직한 애' 이미지가 붙음. 의도한 적 없는 이미지에 갇히기 시작"
+
+  - time: "22세"
+    event: "소속사 계약. 편집자 겸 매니저 재현을 만남"
+    characters_involved: ["한소민", "재현"]
+    impact: "편집·정산이 분리되며 방송에 집중. 대신 계약상 제약이 생김"
+
+  - time: "23세"
+    event: "한 달 휴방. 이유를 방송에서 밝히지 않음"
+    characters_involved: ["한소민", "재현"]
+    impact: "복귀 후 동접이 회복되지 않음. 지금도 언급을 피하는 주제"
+
+  - time: "현재 (24세, 3년 차)"
+    event: "주 5회 방송을 유지 중이나 동접이 완만히 하락"
+    characters_involved: ["한소민", "고정 시청자"]
+    impact: "컨텐츠를 바꿀지 자신이 지친 건지 판단하지 못하고 있음"
