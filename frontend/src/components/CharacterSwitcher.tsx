@@ -1,7 +1,5 @@
 import { useEffect, useState } from "react";
 
-import { Button } from "@/components/ui/button";
-import { Input } from "@/components/ui/input";
 import type { CharacterInfo } from "@/types";
 
 interface Props {
@@ -10,14 +8,18 @@ interface Props {
   switching: boolean;
   onSwitch: (id: string) => void;
   onDelete: (id: string) => void;
-  onCreate: (name: string, identity: string) => Promise<boolean>;
+  /** 기존 캐릭터를 질문지 위저드로 다시 연다. */
+  onEdit: (id: string) => void;
+  /** 새 캐릭터 질문지 위저드를 연다. 생성 응답은 위저드가 위임받아 처리한다. */
+  onStartWizard: () => void;
 }
 
 /**
- * 캐릭터 선택·생성·삭제 드롭다운.
+ * 캐릭터 선택·삭제 드롭다운.
  *
- * 열림 상태와 생성 폼 입력은 이 컴포넌트 밖에서 쓸 일이 없으므로 안에 둔다.
+ * 열림 상태는 이 컴포넌트 밖에서 쓸 일이 없으므로 안에 둔다.
  * 바깥 클릭으로 닫는 처리도 여기 함께 둔다 — 상태와 그 정리는 붙어 있어야 한다.
+ * 새 캐릭터 생성은 인라인 폼 대신 질문지 위저드(CharacterWizard)로 위임한다.
  */
 export function CharacterSwitcher({
   characters,
@@ -25,12 +27,10 @@ export function CharacterSwitcher({
   switching,
   onSwitch,
   onDelete,
-  onCreate,
+  onEdit,
+  onStartWizard,
 }: Props) {
   const [showCharManager, setShowCharManager] = useState(false);
-  const [showNewCharacter, setShowNewCharacter] = useState(false);
-  const [newName, setNewName] = useState("");
-  const [newIdentity, setNewIdentity] = useState("");
 
   useEffect(() => {
     if (!showCharManager) return;
@@ -38,21 +38,11 @@ export function CharacterSwitcher({
       const target = e.target as HTMLElement;
       if (!target.closest("[data-char-manager]")) {
         setShowCharManager(false);
-        setShowNewCharacter(false);
       }
     };
     document.addEventListener("mousedown", handler);
     return () => document.removeEventListener("mousedown", handler);
   }, [showCharManager]);
-
-  const handleCreate = async () => {
-    if (!newName.trim()) return;
-    if (await onCreate(newName, newIdentity)) {
-      setNewName("");
-      setNewIdentity("");
-      setShowNewCharacter(false);
-    }
-  };
 
   const switchCharacter = onSwitch;
   const deleteCharacter = onDelete;
@@ -115,64 +105,30 @@ export function CharacterSwitcher({
                   ×
                 </button>
               )}
+              <button
+                className="ml-1 p-1 rounded hover:bg-accent/60 text-muted-foreground hover:text-foreground transition-colors"
+                title="질문지로 열기"
+                onClick={(e) => {
+                  e.stopPropagation();
+                  setShowCharManager(false);
+                  onEdit(c.id);
+                }}
+              >
+                ✎
+              </button>
             </div>
           ))}
           <div className="border-t mt-1 pt-1">
-            {showNewCharacter ? (
-              <div className="px-2 py-2 space-y-2">
-                <Input
-                  placeholder="캐릭터 이름"
-                  value={newName}
-                  onChange={(e) => setNewName(e.target.value)}
-                  className="h-7 text-xs"
-                  autoFocus
-                  onKeyDown={(e) => {
-                    if (e.key === "Enter" && newName.trim()) handleCreate();
-                    if (e.key === "Escape") {
-                      setShowNewCharacter(false);
-                      setNewName("");
-                      setNewIdentity("");
-                    }
-                  }}
-                />
-                <Input
-                  placeholder="한줄 소개 (선택)"
-                  value={newIdentity}
-                  onChange={(e) => setNewIdentity(e.target.value)}
-                  className="h-7 text-xs"
-                />
-                <div className="flex gap-1">
-                  <Button
-                    size="sm"
-                    className="h-7 flex-1 text-xs"
-                    onClick={handleCreate}
-                    disabled={!newName.trim()}
-                  >
-                    만들기
-                  </Button>
-                  <Button
-                    size="sm"
-                    variant="ghost"
-                    className="h-7 text-xs"
-                    onClick={() => {
-                      setShowNewCharacter(false);
-                      setNewName("");
-                      setNewIdentity("");
-                    }}
-                  >
-                    취소
-                  </Button>
-                </div>
-              </div>
-            ) : (
-              <button
-                className="flex items-center gap-2 w-full px-3 py-2 rounded-md text-sm hover:bg-muted transition-colors"
-                onClick={() => setShowNewCharacter(true)}
-              >
-                <span>+</span>
-                <span>새 캐릭터</span>
-              </button>
-            )}
+            <button
+              className="flex items-center gap-2 w-full px-3 py-2 rounded-md text-sm text-muted-foreground hover:bg-muted hover:text-foreground transition-colors"
+              onClick={() => {
+                setShowCharManager(false);
+                onStartWizard();
+              }}
+            >
+              <span>＋</span>
+              <span>새 캐릭터 만들기</span>
+            </button>
           </div>
         </div>
       )}

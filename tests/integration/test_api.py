@@ -44,6 +44,15 @@ class _MockHistory:
         _MockTurn("assistant", "안녕하세요! 반갑습니다.", "2025-01-01T00:00:01"),
     ]
 
+    def count(self) -> int:
+        return len(self._turns)
+
+
+class _MockPersona:
+    """first_message 시딩 조건에 필요한 최소 표면."""
+
+    _data: dict = {}
+
 
 class MockCharacterOS:
     """테스트용 CharacterOS 더블."""
@@ -52,6 +61,7 @@ class MockCharacterOS:
         self.emotion = _MockEmotion()
         self.memory = _MockMemory()
         self.history = _MockHistory()
+        self.persona = _MockPersona()
 
     def chat(self, message: str) -> str:
         return f"Echo: {message}"

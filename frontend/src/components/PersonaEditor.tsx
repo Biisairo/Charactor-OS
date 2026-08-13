@@ -93,6 +93,15 @@ export function PersonaEditor({
               />
             </div>
           </div>
+          <div className="space-y-1">
+            <label className="text-xs font-medium">첫 메시지</label>
+            <textarea
+              className="w-full min-h-[60px] rounded-md border border-input bg-background px-3 py-2 text-sm"
+              value={editData.first_message || ""}
+              onChange={(e) => setEditData({ ...editData, first_message: e.target.value })}
+              placeholder="채팅 시작 시 캐릭터가 건네는 첫 한마디"
+            />
+          </div>
         </div>
       )}
 
@@ -168,6 +177,20 @@ export function PersonaEditor({
               }
             />
           </div>
+          <div className="space-y-1">
+            <label className="text-xs font-medium">말투 샘플 문장</label>
+            <textarea
+              className="w-full min-h-[60px] rounded-md border border-input bg-background px-3 py-2 text-sm"
+              value={editData.speaking_style?.sample || ""}
+              onChange={(e) =>
+                setEditData({
+                  ...editData,
+                  speaking_style: { ...editData.speaking_style, sample: e.target.value },
+                })
+              }
+              placeholder="이 말투로 실제로 말하는 한 문장"
+            />
+          </div>
           <div className="grid grid-cols-2 gap-2">
             {(["tone", "vocabulary", "sentence_pattern", "emojis"] as const).map((key) => (
               <div key={key} className="space-y-1">
@@ -218,6 +241,15 @@ export function PersonaEditor({
               className="w-full min-h-[100px] rounded-md border border-input bg-background px-3 py-2 text-sm"
               value={editData.backstory || ""}
               onChange={(e) => setEditData({ ...editData, backstory: e.target.value })}
+            />
+          </div>
+          <div className="space-y-1">
+            <label className="text-xs font-medium">메타 인식</label>
+            <textarea
+              className="w-full min-h-[60px] rounded-md border border-input bg-background px-3 py-2 text-sm"
+              value={editData.meta_awareness || ""}
+              onChange={(e) => setEditData({ ...editData, meta_awareness: e.target.value })}
+              placeholder="자신이 가상 인물임을 아는가? 현실 세계를 아는가?"
             />
           </div>
           <ArrayInput label="좋아하는 것" values={editData.likes || []} onChange={(v) => setEditData({ ...editData, likes: v })} />
@@ -339,6 +371,11 @@ export function PersonaEditor({
               />
             </div>
           ))}
+          <ArrayInput
+            label="남들이 모르는 비밀·약점"
+            values={editData.secrets || []}
+            onChange={(v) => setEditData({ ...editData, secrets: v })}
+          />
         </div>
       )}
 

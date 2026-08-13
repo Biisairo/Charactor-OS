@@ -75,6 +75,8 @@ class PersonaModule:
                 parts.append(f"- 문미: {', '.join(endings)}")
             if emojis := speaking.get("emojis"):
                 parts.append(f"- 이모지: {emojis}")
+            if sample := speaking.get("sample"):
+                parts.append(f"- 샘플: {sample}")
             parts.append("")
 
         # 가치관
@@ -89,6 +91,14 @@ class PersonaModule:
         for label, key in [("좋아하는 것", "likes"), ("싫어하는 것", "dislikes")]:
             if items := d.get(key):
                 parts.append(f"[{label}]\n{', '.join(items)}\n")
+
+        # 비밀 — 행동 지침보다 앞에 둬서 절대 규칙과 함께 참조되게 한다
+        if secrets := d.get("secrets"):
+            parts.append(f"[남들이 모르는 것]\n{', '.join(secrets)}\n")
+
+        # 메타 인식 — 캐릭터가 자신과 세계 바깥(현실)을 어떻게 보는가
+        if meta := d.get("meta_awareness"):
+            parts.append(f"[메타 인식]\n{meta}\n")
 
         return "\n".join(parts)
 

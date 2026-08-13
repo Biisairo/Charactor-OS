@@ -14,6 +14,7 @@ identity: string                # 한 줄 자기소개
 age: int | string               # 나이 또는 나이대
 gender: string                  # 성별
 occupation: string              # 직업/역할
+first_message: string           # 대화 시작 시 캐릭터가 건네는 첫 한마디 (UI가 표시)
 
 # ─── 성격 ───
 personality:
@@ -34,6 +35,7 @@ speaking_style:
   fillers: string[]             # 말버릇/추임새 (예: ["ㅋㅋ", "ㅎㅎ", "어..."])
   emojis: string                # 이모지 사용 패턴 (예: "자주 사용", "거의 사용 안함")
   endings: string[]             # 문미 패턴 (예: ["~야", "~ㅋㅋ", "~???"])
+  sample: string                # 말투를 그대로 보여주는 샘플 문장
 
 # ─── 가치관 ───
 values: string[]                # 핵심 가치관 (예: ["정직", "공감", "자유"])
@@ -78,6 +80,12 @@ inner_world:
   current_thought: string       # 현재 생각/고민
   hidden_feelings: string       # 숨기는 감정
   wants_to_say: string          # 하고 싶지만 못하는 말
+
+# ─── 비밀 ───
+secrets: string[]               # 남들이 모르는 비밀/약점 (예: ["작년 휴방의 이유"])
+
+# ─── 메타 인식 ───
+meta_awareness: string          # 캐릭터가 자신이 가상 인물임을 아는가, 현실 세계를 아는가
 
 # ─── Few-shot 예시 (내장) ───
 examples:

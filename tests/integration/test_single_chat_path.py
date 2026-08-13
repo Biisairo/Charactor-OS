@@ -144,3 +144,86 @@ class TestReflectionOnChatPath:
 
         assert response.status_code == 200
         assert "reflection" in client.labels
+
+
+class TestFirstMessageSeeding:
+    """first_message가 첫 턴에 히스토리로 심어져 LLM 맥락과 일치한다."""
+
+    OPENER = "안녕하신가. 오늘 날씨가 좋구려."
+
+    @pytest.mark.anyio
+    async def test_opener_is_seeded_on_first_turn(self, character_dir: Path, tmp_path: Path):
+        from unittest.mock import AsyncMock, patch
+
+        from httpx import ASGITransport, AsyncClient
+
+        from src.api.server import app
+
+        cos = make_character_os(character_dir, tmp_path / "state", RoutingClient())
+        cos.persona._data["first_message"] = self.OPENER
+        mock_run = AsyncMock(side_effect=lambda fn: fn())
+
+        with (
+            patch("src.api.deps.get_cos", return_value=cos),
+            patch("src.api.deps.run_in_worker", mock_run),
+        ):
+            transport = ASGITransport(app=app)
+            async with AsyncClient(transport=transport, base_url="http://test") as http:
+                response = await http.post("/api/chat", json={"message": "잘 있었나"})
+
+        assert response.status_code == 200
+        prompt = cos.history.to_prompt()
+        assert self.OPENER in prompt, "첫 턴 히스토리에 오프너가 없어 LLM이 모른다"
+        assert prompt.index(self.OPENER) < prompt.index("잘 있었나"), (
+            "오프너가 사용자 말보다 앞서야 한다"
+        )
+
+    @pytest.mark.anyio
+    async def test_opener_is_not_reseeded(self, character_dir: Path, tmp_path: Path):
+        """두 번째 턴에는 다시 심지 않는다 — 오프너가 중복되면 안 된다."""
+        from unittest.mock import AsyncMock, patch
+
+        from httpx import ASGITransport, AsyncClient
+
+        from src.api.server import app
+
+        cos = make_character_os(character_dir, tmp_path / "state", RoutingClient())
+        cos.persona._data["first_message"] = self.OPENER
+        mock_run = AsyncMock(side_effect=lambda fn: fn())
+
+        with (
+            patch("src.api.deps.get_cos", return_value=cos),
+            patch("src.api.deps.run_in_worker", mock_run),
+        ):
+            transport = ASGITransport(app=app)
+            async with AsyncClient(transport=transport, base_url="http://test") as http:
+                await http.post("/api/chat", json={"message": "첫 말"})
+                await http.post("/api/chat", json={"message": "둘째 말"})
+
+        assert cos.history.to_prompt().count(self.OPENER) == 1
+
+    @pytest.mark.anyio
+    async def test_no_opener_no_seed(self, character_dir: Path, tmp_path: Path):
+        """first_message가 없으면 아무것도 심지 않는다."""
+        from unittest.mock import AsyncMock, patch
+
+        from httpx import ASGITransport, AsyncClient
+
+        from src.api.server import app
+
+        cos = make_character_os(character_dir, tmp_path / "state", RoutingClient())
+        cos.persona._data.pop("first_message", None)
+        mock_run = AsyncMock(side_effect=lambda fn: fn())
+
+        with (
+            patch("src.api.deps.get_cos", return_value=cos),
+            patch("src.api.deps.run_in_worker", mock_run),
+        ):
+            transport = ASGITransport(app=app)
+            async with AsyncClient(transport=transport, base_url="http://test") as http:
+                response = await http.post("/api/chat", json={"message": "잘 있었나"})
+
+        assert response.status_code == 200
+        prompt = cos.history.to_prompt()
+        assert self.OPENER not in prompt
+        assert "잘 있었나" in prompt

@@ -2,6 +2,7 @@ import { useCallback, useEffect, useRef, useState } from "react";
 
 import { Button } from "@/components/ui/button";
 import { CharacterSwitcher } from "@/components/CharacterSwitcher";
+import { CharacterWizard } from "@/components/CharacterWizard";
 import { ChatPanel } from "@/components/ChatPanel";
 import { LogModal } from "@/components/LogModal";
 import { SettingsSheet } from "@/components/SettingsSheet";
@@ -9,7 +10,7 @@ import { Sidebar } from "@/components/Sidebar";
 import { useChat } from "@/hooks/useChat";
 import { useDarkMode } from "@/hooks/useDarkMode";
 import { useServerState } from "@/hooks/useServerState";
-import type { Message } from "@/types";
+import type { CharacterDraft, Message } from "@/types";
 
 /**
  * 앱 셸 — 화면 조각을 배치하고 훅을 잇는다.
@@ -23,6 +24,11 @@ export default function App() {
   const [sheetOpen, setSheetOpen] = useState(false);
   const [debugOpen, setDebugOpen] = useState(true);
   const [logModalOpen, setLogModalOpen] = useState(false);
+  // 위저지 세션 — id가 null이면 새 캐릭터, 있으면 그 캐릭터의 질문지 수정.
+  const [wizardSession, setWizardSession] = useState<{
+    id: string | null;
+    draft?: CharacterDraft;
+  } | null>(null);
 
   const scrollRef = useRef<HTMLDivElement>(null);
   const logScrollRef = useRef<HTMLDivElement>(null);
@@ -65,6 +71,27 @@ export default function App() {
     }
   }, [server.logs]);
 
+  // 첫 메시지 — 대화가 비어 있을 때 캐릭터가 먼저 건넨다. 히스토리가 있으면
+  // onHistoryLoaded가 그걸로 대체하므로, 이 메시지는 정말 첫 대화에서만 보인다.
+  const { setMessages } = chat;
+  const messageCount = chat.messages.length;
+  useEffect(() => {
+    const first = server.persona?.first_message;
+    if (first && messageCount === 0) {
+      setMessages([
+        { id: "first-message", role: "assistant", content: first, timestamp: new Date() },
+      ]);
+    }
+  }, [server.persona, messageCount, setMessages]);
+
+  // 질문지로 기존 캐릭터를 연다 — 서버에서 응답을 읽은 뒤에 세션을 연다.
+  const editWizard = async (id: string) => {
+    const draft = await server.loadCharacterDraft(id);
+    if (draft) setWizardSession({ id, draft });
+  };
+
+  const wizardEditId = wizardSession?.id ?? null;
+
   return (
     <div className="flex h-screen bg-background text-foreground">
       <div className="flex-1 flex flex-col min-w-0">
@@ -77,7 +104,8 @@ export default function App() {
               switching={server.switching}
               onSwitch={server.switchCharacter}
               onDelete={server.deleteCharacter}
-              onCreate={server.createCharacter}
+              onEdit={editWizard}
+              onStartWizard={() => setWizardSession({ id: null })}
             />
           </div>
           <div className="flex items-center gap-2">
@@ -148,6 +176,22 @@ export default function App() {
           logs={server.logs}
           logScrollRef={logScrollRef}
           setLogModalOpen={setLogModalOpen}
+        />
+      )}
+
+      {wizardSession && (
+        <CharacterWizard
+          key={wizardEditId ?? "new"}
+          open
+          mode={wizardEditId ? "edit" : "create"}
+          initialDraft={wizardSession.draft}
+          onClose={() => setWizardSession(null)}
+          onCreate={server.createCharacterFromDraft}
+          onUpdate={
+            wizardEditId
+              ? (draft) => server.updateCharacterStatic(wizardEditId, draft)
+              : undefined
+          }
         />
       )}
     </div>

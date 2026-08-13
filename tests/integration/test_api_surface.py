@@ -37,6 +37,8 @@ EXPECTED_ROUTES = [
     ("/api/character/switch", ("POST",)),
     ("/api/characters", ("POST",)),
     ("/api/characters/{character_id}", ("DELETE",)),
+    ("/api/characters/{character_id}/draft", ("GET",)),
+    ("/api/characters/{character_id}/static", ("PUT",)),
     ("/api/logs", ("GET",)),
     ("/api/performance", ("GET",)),
     ("/api/character/reset", ("POST",)),

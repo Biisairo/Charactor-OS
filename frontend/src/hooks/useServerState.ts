@@ -10,6 +10,8 @@
 import { useCallback, useEffect, useState } from "react";
 
 import type {
+  CharacterDraft,
+  CharacterDraftResponse,
   CharacterInfo,
   EmotionState,
   KnowledgeEntry,
@@ -19,6 +21,7 @@ import type {
   PersonaData,
 } from "@/types";
 import { apiDelete, apiGet, apiPost, apiPut } from "@/lib/api";
+import { normalizeDraft } from "@/lib/characterDraft";
 
 interface Options {
   /** 서버에 저장된 대화 기록을 읽었을 때 호출된다. */
@@ -191,15 +194,52 @@ export function useServerState({ onHistoryLoaded, onConversationCleared }: Optio
     [activeCharacter, refreshData, onConversationCleared],
   );
 
-  const createCharacter = useCallback(
-    async (name: string, identity: string) => {
-      if (!name.trim()) return false;
+  const createCharacterFromDraft = useCallback(
+    async (draft: CharacterDraft): Promise<boolean> => {
+      const name = draft.persona.name.trim();
+      if (!name) return false;
       try {
-        await apiPost("/api/characters", { name, identity });
+        const res = await apiPost<{ status: string; character: string }>("/api/characters", {
+          name,
+          identity: draft.persona.identity,
+          static_data: buildStaticPayload(draft),
+        });
+        // 새 캐릭터로 바로 전환 — 대화를 비우는 건 생성 의도에 이미 포함돼 있으므로
+        // 확인 없이 진행한다. 목록·상태는 refreshData가 다시 읽는다.
+        await apiPost("/api/character/switch", { character_id: res.character });
+        onConversationCleared();
         await refreshData();
         return true;
       } catch {
         setError("캐릭터 생성 실패");
+        return false;
+      }
+    },
+    [refreshData, onConversationCleared],
+  );
+
+  const loadCharacterDraft = useCallback(
+    async (characterId: string): Promise<CharacterDraft | null> => {
+      try {
+        const raw = await apiGet<CharacterDraftResponse>(`/api/characters/${characterId}/draft`);
+        return normalizeDraft(raw);
+      } catch {
+        setError("질문지 로드 실패");
+        return null;
+      }
+    },
+    [],
+  );
+
+  const updateCharacterStatic = useCallback(
+    async (characterId: string, draft: CharacterDraft): Promise<boolean> => {
+      if (!draft.persona.name.trim()) return false;
+      try {
+        await apiPut(`/api/characters/${characterId}/static`, buildStaticPayload(draft));
+        await refreshData();
+        return true;
+      } catch {
+        setError("캐릭터 저장 실패");
         return false;
       }
     },
@@ -242,7 +282,85 @@ export function useServerState({ onHistoryLoaded, onConversationCleared }: Optio
     loadKnowledge,
     resetCharacter,
     switchCharacter,
-    createCharacter,
+    createCharacterFromDraft,
+    loadCharacterDraft,
+    updateCharacterStatic,
     deleteCharacter,
   };
+}
+
+// ─── 질문지 응답 → POST /api/characters 페이로드 ─────────────────────────
+// 위저지의 빈 응답지를 서버에 그대로 보내면 YAML에 빈 껍데기가 남는다.
+// 여기서 빈 문자열·빈 배열 항목을 걸러, 건너뛴 섹션은 아예 보내지 않는다.
+
+function hasContent(v: unknown): boolean {
+  if (Array.isArray(v)) return v.length > 0;
+  return Boolean(v);
+}
+
+function cleanRows<T extends object>(rows: T[]): T[] {
+  return rows.filter((r) => Object.values(r as Record<string, unknown>).some(hasContent));
+}
+
+function cleanStrings(items: string[]): string[] {
+  return items.map((s) => s.trim()).filter(Boolean);
+}
+
+function buildStaticPayload(draft: CharacterDraft): Record<string, unknown> {
+  const p = draft.persona;
+  const persona: Record<string, unknown> = {
+    ...p,
+    values: cleanStrings(p.values),
+    likes: cleanStrings(p.likes),
+    dislikes: cleanStrings(p.dislikes),
+    fears: cleanStrings(p.fears),
+    goals: cleanStrings(p.goals),
+    personality: {
+      ...p.personality,
+      traits: cleanStrings(p.personality.traits),
+    },
+    speaking_style: {
+      ...p.speaking_style,
+      fillers: cleanStrings(p.speaking_style.fillers),
+      endings: cleanStrings(p.speaking_style.endings),
+    },
+    behavior: {
+      situations: cleanRows(p.behavior.situations),
+      topics: cleanRows(p.behavior.topics),
+      rules: cleanStrings(p.behavior.rules),
+    },
+    emotion_triggers: cleanRows(p.emotion_triggers),
+    relationships: cleanRows(p.relationships),
+    examples: cleanRows(p.examples),
+  };
+
+  const k = draft.knowledge;
+  const knowledge: Record<string, unknown> = {};
+  if (Object.values(k.world).some(hasContent)) {
+    knowledge.world = { ...k.world, rules: cleanStrings(k.world.rules) };
+  }
+  const locations = cleanRows(k.locations);
+  if (locations.length) knowledge.locations = locations;
+  const relationships = cleanRows(k.relationships);
+  if (relationships.length) knowledge.relationships = relationships;
+  const timeline = cleanRows(k.timeline);
+  if (timeline.length) knowledge.timeline = timeline;
+  if (k.freeform.trim()) knowledge.freeform = k.freeform;
+
+  const examples: Record<string, unknown> = {};
+  for (const key of ["greeting", "comfort", "conflict", "humor", "daily"] as const) {
+    const group = draft.examples[key];
+    const cleaned = group.examples
+      .filter((ex) => ex.user.trim() || ex.character.trim())
+      .map((ex) => ({ ...ex, emotion_state: cleanStrings(ex.emotion_state) }));
+    if (cleaned.length) {
+      examples[key] = {
+        tag: group.tag,
+        keywords: cleanStrings(group.keywords),
+        examples: cleaned,
+      };
+    }
+  }
+
+  return { persona, knowledge, examples };
 }
