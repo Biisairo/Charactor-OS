@@ -52,7 +52,7 @@ class TestTraceDisabledByDefault:
 
         cos.chat("안녕하시오")
 
-        assert cos._meter.summary()["calls"] == 3
+        assert cos._meter.summary()["calls"] == 5
 
     def test_conversation_result_is_identical(self, character_dir: Path, tmp_path: Path):
         """계측 여부가 대화 동작을 바꾸면 안 된다 (REQ-04-5)."""
@@ -69,21 +69,24 @@ class TestMeteringEnabled:
         return cos._last_trace.metrics
 
     def test_counts_calls(self, character_dir: Path, tmp_path: Path):
-        """초안 1 + 감정 1 + 기억 1 = 3회 (Reflection 비활성)."""
-        assert self._run(character_dir, tmp_path)["calls"] == 3
+        """뇌 2 + 초안 1 + 감정 1 + 기억 1 = 5회 (Reflection 비활성).
+
+        뇌의 루프 수는 입력에 따라 달라진다. 여기서는 기본 대본이 2회를 돈다.
+        """
+        assert self._run(character_dir, tmp_path)["calls"] == 5
 
     def test_sums_tokens(self, character_dir: Path, tmp_path: Path):
         metrics = self._run(character_dir, tmp_path)
 
-        assert metrics["prompt_tokens"] == 3000
-        assert metrics["completion_tokens"] == 150
-        assert metrics["total_tokens"] == 3150
+        assert metrics["prompt_tokens"] == 5000
+        assert metrics["completion_tokens"] == 250
+        assert metrics["total_tokens"] == 5250
 
     def test_separates_call_sites(self, character_dir: Path, tmp_path: Path):
         """어느 단계가 호출했는지 구분되어야 한다 (REQ-04-1)."""
         by_label = self._run(character_dir, tmp_path)["by_label"]
 
-        assert set(by_label) == {"response", "emotion", "memory"}
+        assert set(by_label) == {"react", "response", "emotion", "memory"}
 
     def test_reflection_adds_calls(self, character_dir: Path, tmp_path: Path):
         """Reflection을 켜면 검토 호출이 추가로 잡혀야 한다."""
@@ -128,7 +131,7 @@ class TestMeteringEnabled:
 
         payload = cos._last_trace.to_dict()
 
-        assert payload["metrics"]["calls"] == 3
+        assert payload["metrics"]["calls"] == 5
         assert "cost_usd" in payload["metrics"]
 
 
@@ -140,7 +143,7 @@ class TestFormatTrace:
 
         text = format_trace(cos._last_trace)
 
-        assert "호출 3회" in text
+        assert "호출 5회" in text
         assert "토큰" in text
         assert "비용" in text
         assert "response" in text

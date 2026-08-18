@@ -5,6 +5,7 @@ from .knowledge import KnowledgeModule
 from .memory import MemoryModule
 from .persona import PersonaModule
 from .reflection import ReflectionReviewer
+from .working_memory import WorkingMemoryItem, WorkingMemoryModule
 
 __all__ = [
     "PersonaModule",
@@ -14,4 +15,6 @@ __all__ = [
     "HistoryModule",
     "FewShotModule",
     "ReflectionReviewer",
+    "WorkingMemoryModule",
+    "WorkingMemoryItem",
 ]

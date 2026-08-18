@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+import copy
+import json
 import shutil
 from collections.abc import Callable
 from dataclasses import dataclass
@@ -10,10 +12,11 @@ from pathlib import Path
 import numpy as np
 import pytest
 
+from src.agent.tools import FINISH_TOOL
 from src.call_log import CallLogger
 from src.character_layout import CharacterLayout
 from src.character_os import CharacterOS
-from src.llm.client import TrimmedMessage
+from src.llm.client import ToolCallPart, TrimmedMessage
 
 # ---------------------------------------------------------------------------
 # MockClient — 실제 LLM 호출 없이 고정 응답 반환
@@ -62,6 +65,7 @@ class MockClient:
         mute: bool,
         response_format: dict | None = None,
         token_callback=None,
+        max_tokens: int | None = None,
     ) -> TrimmedMessage:
         self.call_count += 1
         self.last_messages = messages
@@ -165,6 +169,100 @@ def patch_embedding(monkeypatch):
     monkeypatch.setattr(CharacterOS, "_embedding_model", stub)
 
 
+# ---------------------------------------------------------------------------
+# 뇌(ReAct) 테스트 지원 — 도구 호출 대본
+#
+# 뇌는 tool_calls로 말한다. MockClient는 텍스트만 돌려주므로,
+# "몇 번째 호출에 어떤 도구를 부를지"를 대본으로 고정하는 더블이 따로 필요하다.
+# ---------------------------------------------------------------------------
+
+
+def tool_call(tool_name, /, *, raw_arguments: str | None = None, **arguments) -> ToolCallPart:
+    """도구 호출 1건. `raw_arguments`를 주면 JSON 파싱 실패까지 흉내낼 수 있다."""
+    args = raw_arguments if raw_arguments is not None else json.dumps(arguments, ensure_ascii=False)
+    return ToolCallPart(id=f"call_{tool_name}", name=tool_name, arguments=args)
+
+
+def finish_call(**payload) -> ToolCallPart:
+    """종료 선언. 인자가 곧 응답 전략이다."""
+    return tool_call(FINISH_TOOL, **payload)
+
+
+def tool_step(*calls: ToolCallPart) -> TrimmedMessage:
+    """도구를 호출하는 LLM 응답 1회."""
+    return TrimmedMessage(
+        content="", role="assistant", reasoning_content="", tool_calls=list(calls), usage=None
+    )
+
+
+def text_step(content: str) -> TrimmedMessage:
+    """도구 없이 텍스트만 돌려주는 LLM 응답 1회."""
+    return TrimmedMessage(
+        content=content, role="assistant", reasoning_content="", tool_calls=[], usage=None
+    )
+
+
+class ScriptedClient:
+    """대본대로 응답하는 더블. 예외를 넣으면 그 차례에 던진다.
+
+    messages는 깊은 복사로 보관한다 — 뇌는 하나의 리스트를 계속 확장하므로,
+    참조를 그대로 들고 있으면 모든 호출이 최종 상태로 보인다.
+    """
+
+    def __init__(self, steps: list):
+        self._steps = list(steps)
+        self.calls: list[dict] = []
+        self.call_count = 0
+        self.env = type("Env", (), {"model": "scripted-model"})()
+
+    def call_llm(
+        self,
+        messages,
+        tools=None,
+        use_stream=False,
+        mute=True,
+        response_format=None,
+        token_callback=None,
+        max_tokens=None,
+    ) -> TrimmedMessage:
+        self.calls.append(
+            {
+                "messages": copy.deepcopy(messages),
+                "tools": tools or [],
+                "max_tokens": max_tokens,
+            }
+        )
+        self.call_count += 1
+
+        if not self._steps:
+            raise AssertionError("대본이 소진되었는데 호출이 더 들어왔다")
+
+        step = self._steps.pop(0)
+        if isinstance(step, Exception):
+            raise step
+        return step
+
+
+# 파이프라인 테스트의 기본 뇌 동작 — 도구 셋을 한 번 훑고 종료한다.
+# 뇌를 도입하기 전 고정 수집이 모으던 것과 같은 재료가 프롬프트에 오르도록 맞췄다.
+DEFAULT_BRAIN_STRATEGY = {
+    "situation": "사용자가 말을 걸었다",
+    "intent": "성실하게 응답한다",
+    "avoid": "설정에 없는 사실 지어내기",
+    "tone": "평소 말투",
+}
+
+
+def default_brain_script() -> list[TrimmedMessage]:
+    return [
+        tool_step(
+            tool_call("search_memory", query="사용자"),
+            tool_call("get_history", n=10),
+        ),
+        tool_step(finish_call(**DEFAULT_BRAIN_STRATEGY)),
+    ]
+
+
 class PipelineMockClient(MockClient):
     """파이프라인 전 구간에서 쓰이는 MockClient.
 
@@ -180,10 +278,32 @@ class PipelineMockClient(MockClient):
         self,
         response: str = "안녕하세요! 저는 홍길동입니다.",
         fail_when: Callable[[str], bool] | None = None,
+        brain_script: list | None = None,
     ):
         super().__init__(response=response)
         self.all_call_records: list[dict] = []
         self._fail_when = fail_when
+        # 뇌 호출은 턴마다 다시 시작하므로 대본은 원본을 보관하고 턴 단위로 복제한다.
+        self._brain_script_source = brain_script
+        self._brain_steps: list = []
+        self.brain_call_count = 0
+
+    @staticmethod
+    def _is_brain_call(tools) -> bool:
+        """뇌 호출인가. 종료 도구가 목록에 있으면 뇌다."""
+        return bool(tools) and any(t.get("function", {}).get("name") == FINISH_TOOL for t in tools)
+
+    def _next_brain_step(self) -> TrimmedMessage:
+        if not self._brain_steps:
+            self._brain_steps = list(
+                self._brain_script_source
+                if self._brain_script_source is not None
+                else default_brain_script()
+            )
+        step = self._brain_steps.pop(0)
+        if isinstance(step, Exception):
+            raise step
+        return step
 
     def call_llm(
         self,
@@ -193,10 +313,20 @@ class PipelineMockClient(MockClient):
         mute=True,
         response_format=None,
         token_callback=None,
+        max_tokens=None,
     ) -> TrimmedMessage:
         joined = " ".join(str(m.get("content", "")) for m in messages)
         if self._fail_when is not None and self._fail_when(joined):
             raise RuntimeError("주입된 LLM 실패")
+
+        if self._is_brain_call(tools):
+            self.brain_call_count += 1
+            self.call_count += 1
+            self.last_messages = messages
+            self.all_call_records.append(
+                {"messages": messages, "use_stream": use_stream, "response_format": response_format}
+            )
+            return self._next_brain_step()
 
         self.all_call_records.append(
             {
@@ -227,6 +357,7 @@ def make_character_os(
         "memory_db_path": str(state_dir / "memories.db"),
         "emotion_save_path": str(state_dir / "emotions.json"),
         "history_save_path": str(state_dir / "history.json"),
+        "working_memory_path": str(state_dir / "working_memory.json"),
         "debug": False,
         "output": lambda _msg: None,
         "model_type": "api",

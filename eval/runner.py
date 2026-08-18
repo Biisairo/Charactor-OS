@@ -167,6 +167,7 @@ def _generate_response(
         memory_db_path=str(workdir / "memories.db"),
         emotion_save_path=str(workdir / "emotions.json"),
         history_save_path=str(workdir / "history.json"),
+        working_memory_path=str(workdir / "working_memory.json"),
         debug=False,
         output=lambda _msg: None,
         no_review=no_review,

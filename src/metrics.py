@@ -83,6 +83,9 @@ class MeteredClient:
         duration_ms = (time.perf_counter() - started) * 1000
         usage = getattr(result, "usage", None)
         content = getattr(result, "content", "") or ""
+        # 도구를 부른 응답은 본문이 비어 있는 것이 정상이다. 빈 본문만 보고 거부로
+        # 세면 뇌의 루프가 통째로 '프로바이더 거부'로 집계된다 (SPEC-09).
+        tool_calls = getattr(result, "tool_calls", None)
         self._meter.record(
             CallRecord(
                 label=self._label,
@@ -95,7 +98,7 @@ class MeteredClient:
                 usage_known=usage is not None,
                 # 판별은 여기서 한다. 모든 호출이 이 지점을 지나므로 라벨을 가리지 않고
                 # 잡힌다 — 호출 지점마다 검사를 심으면 한 곳만 빠뜨려도 조용히 샌다.
-                refused=provider_error_reason(content) is not None,
+                refused=not tool_calls and provider_error_reason(content) is not None,
             )
         )
         return result

@@ -6,6 +6,9 @@ from collections.abc import Callable
 from dataclasses import dataclass
 from pathlib import Path
 
+from src.agent.brain import ReActBrain
+from src.agent.schemas import ThoughtBundle
+from src.agent.tools import ToolRegistry
 from src.analysis import ConflictClassifier, EmotionAnalyzer, MemoryExtractor
 from src.call_log import CallLogger
 from src.character_layout import CharacterLayout
@@ -19,6 +22,7 @@ from src.modules import (
     MemoryModule,
     PersonaModule,
     ReflectionReviewer,
+    WorkingMemoryModule,
 )
 from src.pricing import estimate_cost, load_price_table
 from src.prompts.engine import PromptEngine
@@ -77,15 +81,6 @@ class _Turn:
     failed: bool = False
 
 
-@dataclass
-class ContextBundle:
-    persona: str
-    knowledge_context: str
-    emotion: str
-    memory_context: str
-    history_context: str
-
-
 class CharacterOS:
     """3-stage 파이프라인으로 캐릭터 대화를 오케스트레이션한다."""
 
@@ -95,6 +90,7 @@ class CharacterOS:
         memory_db_path: str | None = None,
         emotion_save_path: str | None = None,
         history_save_path: str | None = None,
+        working_memory_path: str | None = None,
         debug: bool = False,
         output: Callable[[str], None] = print,
         debug_output: Callable[[str], None] | None = None,
@@ -112,7 +108,7 @@ class CharacterOS:
                 테스트에서 실제 API 호출 없이 파이프라인을 검증하기 위한 진입점이다.
             call_logger: LLM 호출 운영 로거. 생략하면 기본 경로에 기록한다.
                 테스트에서는 비활성 로거를 주입해 파일 쓰기를 막는다.
-            memory_db_path, emotion_save_path, history_save_path:
+            memory_db_path, emotion_save_path, history_save_path, working_memory_path:
                 생략하면 `character_dir/state/` 아래로 파생한다. 캐릭터마다
                 상태가 분리되는 것이 기본 동작이다 (TASK-17). 명시하면 그
                 경로를 그대로 쓴다 — 평가 하네스와 테스트가 상태를 임시
@@ -128,6 +124,7 @@ class CharacterOS:
         memory_db_path = memory_db_path or str(layout.memory_db_path)
         emotion_save_path = emotion_save_path or str(layout.emotion_save_path)
         history_save_path = history_save_path or str(layout.history_save_path)
+        working_memory_path = working_memory_path or str(layout.working_memory_path)
         self._debug = debug
         self._output = output
         self._debug_output = debug_output or (lambda msg: None)
@@ -168,6 +165,7 @@ class CharacterOS:
         self.knowledge = KnowledgeModule(knowledge_dir)
         self.history = HistoryModule(save_path=history_save_path)
         self.fewshot = FewShotModule(examples_dir, embedding_fn=self._embed)
+        self.working_memory = WorkingMemoryModule(save_path=working_memory_path)
         self.prompt_engine = PromptEngine(max_tokens=3000)
 
         # 정적 데이터 로드
@@ -211,6 +209,17 @@ class CharacterOS:
         self.history.load()
         self._log(f"[모듈 로드] history 완료: {len(self.history._turns)}턴", module="orchestrator")
 
+        self._log("[모듈 로드] working_memory 로드 중...", module="orchestrator")
+        self.working_memory.load()
+        self._log(
+            f"[모듈 로드] working_memory 완료: 미해결 사고 {self.working_memory.count()}개",
+            module="orchestrator",
+        )
+        for issue in self.working_memory.load_issues:
+            self._log(f"[모듈 로드] {issue.describe()}", module="orchestrator")
+            if not issue.expected:
+                self._output(f"경고: 작업기억을 읽지 못했습니다 — {issue.reason}")
+
         # 감정 트리거 주입 (persona → emotion)
         triggers = self.persona.get_emotion_triggers()
         if triggers:
@@ -226,6 +235,24 @@ class CharacterOS:
         self._meter = CallMeter(
             sink=self._log_call, capture_payload=self._call_logger.capture_payload
         )
+
+        # 뇌 — Stage 1. 도구는 기존 모듈에 1:1로 묶인다 (SPEC-09).
+        # meter로 감싼 클라이언트를 넘겨 루프의 모든 호출이 `react` 라벨로 잡히게 한다.
+        self.brain = ReActBrain(
+            client=self._meter.wrap(self.client, "react"),
+            persona=self.persona,
+            tools=ToolRegistry(
+                persona=self.persona,
+                emotion=self.emotion,
+                memory=self.memory,
+                knowledge=self.knowledge,
+                history=self.history,
+                fewshot=self.fewshot,
+            ),
+            working_memory=self.working_memory,
+            log=lambda msg: self._log(msg, module="react"),
+        )
+        self._log("[모듈 로드] ReActBrain 활성화", module="orchestrator")
 
         # Reflection 리뷰어 (no_review=True면 비활성화)
         self._no_review = no_review
@@ -322,64 +349,44 @@ class CharacterOS:
             CharacterOS._embedding_model = SentenceTransformer("all-MiniLM-L6-v2")
         return CharacterOS._embedding_model.encode(text, normalize_embeddings=True)
 
-    def _gather_context(self, user_input: str) -> ContextBundle:
-        """Stage 1: ReAct — 컨텍스트 번들 생성."""
+    def _think(self, user_input: str) -> ThoughtBundle:
+        """Stage 1: 뇌 — 무엇이 필요한지 스스로 판단하고 근거를 모은다.
+
+        고정 순서로 전 모듈을 훑던 자리다. 이제 어떤 도구를 몇 번 부를지는
+        입력에 따라 달라지고, 그 결정과 근거가 그대로 Stage 2의 프롬프트가 된다.
+        """
         self._log("")
         self._log("-" * 40, module="react")
-        self._log("Stage 1: 컨텍스트 수집 시작", module="react")
+        self._log("Stage 1: 사고 시작", module="react")
         self._log("-" * 40, module="react")
         self._log(f"사용자 입력: {user_input}", module="react")
 
-        # 항상 포함
-        self._log("persona 프롬프트 로드", module="react")
-        persona_prompt = self.persona.to_system_prompt()
-        self._log(f"persona 프롬프트 ({len(persona_prompt)}자)", module="react")
+        bundle = self.brain.think(user_input)
 
-        self._log("knowledge 프롬프트 로드", module="react")
-        knowledge_prompt = self.knowledge.to_prompt()
-        self._log(f"knowledge 프롬프트 ({len(knowledge_prompt)}자)", module="react")
-
-        # ReAct loop 시뮬레이션 (도구 호출)
-        self._log("get_emotion 호출", module="react")
-        emotion_prompt = self.emotion.to_prompt()
-        self._log(f"emotion 결과: {self.emotion.get_state()}", module="react")
-
-        self._log("search_memory 호출", module="react")
-        memory_prompt = self.memory.to_prompt(user_input)
-        self._log(f"memory 프롬프트 ({len(memory_prompt)}자)", module="react")
-
-        self._log("get_recent_history 호출", module="react")
-        history_prompt = self.history.to_prompt()
-        self._log(f"history 프롬프트 ({len(history_prompt)}자)", module="react")
-
-        self._log("-" * 40, module="react")
-        self._log("Stage 1: 컨텍스트 수집 완료", module="react")
-        self._log("-" * 40, module="react")
-
-        return ContextBundle(
-            persona=persona_prompt,
-            knowledge_context=knowledge_prompt,
-            emotion=emotion_prompt,
-            memory_context=memory_prompt,
-            history_context=history_prompt,
+        self._log(
+            f"루프 {bundle.iterations}회 · 도구 {', '.join(bundle.tools_used()) or '없음'}"
+            + (" · 상한 도달" if bundle.hit_cap else ""),
+            module="react",
         )
+        self._log("-" * 40, module="react")
+        self._log("Stage 1: 사고 완료", module="react")
+        self._log("-" * 40, module="react")
 
-    def _generate_response(self, user_input: str, context: ContextBundle) -> str:
+        return bundle
+
+    def _generate_response(self, user_input: str, bundle: ThoughtBundle) -> str:
         """Stage 2: Response — 응답 생성 (Reflection 포함)."""
         self._log("")
         self._log("-" * 40, module="response")
         self._log("Stage 2: 응답 생성 시작", module="response")
         self._log("-" * 40, module="response")
 
-        system_prompt = self.prompt_engine.assemble_system_prompt(
-            user_input=user_input,
-            persona=self.persona,
-            emotion=self.emotion,
-            memory=self.memory,
-            knowledge=self.knowledge,
-            history=self.history,
-            fewshot=self.fewshot,
-        )
+        system_prompt = self.prompt_engine.assemble_system_prompt(self.persona, bundle)
+        if self.prompt_engine.last_truncated:
+            self._log(
+                f"예산 초과로 잘린 섹션: {', '.join(self.prompt_engine.last_truncated)}",
+                module="response",
+            )
 
         self._log("시스템 프롬프트:", module="response")
         self._log(system_prompt, module="response")
@@ -443,7 +450,7 @@ class CharacterOS:
 
         return response
 
-    def _post_process(self, user_input: str, response: str) -> None:
+    def _post_process(self, user_input: str, response: str, bundle: ThoughtBundle) -> None:
         """Stage 3: Post-processing — 상태 업데이트 (병렬, 롤백 지원)."""
         self._log("")
         self._log("-" * 40, module="postprocess")
@@ -454,6 +461,7 @@ class CharacterOS:
         emotion_snap = self.emotion.snapshot()
         memory_count = self.memory.snapshot_count()
         history_count = self.history.count()
+        working_memory_snap = self.working_memory.snapshot()
 
         # 이전 대화 컨텍스트 생성 (흐름과 맥락을 보기 위함)
         history_context = self.history.to_prompt(n=10)
@@ -492,12 +500,25 @@ class CharacterOS:
             )
             self._log(f"memory 개수: {self.memory.snapshot_count()}", module="postprocess")
 
+            # 3. 작업기억 — 뇌가 남긴 미해결 사고. 턴 번호는 대화 턴 기준이다.
+            self.working_memory.apply(
+                bundle.resolved_ids,
+                bundle.new_thoughts,
+                turn_index=self.history.count() // 2,
+            )
+            self._log(
+                f"working_memory: 해소 {len(bundle.resolved_ids)}건 · "
+                f"신규 {len(bundle.new_thoughts)}건 · 현재 {self.working_memory.count()}개",
+                module="postprocess",
+            )
+
         except Exception as e:
             # 롤백: 모든 상태를 이전으로 복원
             self._log(f"후처리 실패! 롤백 중... ({e})", module="postprocess")
             self.emotion.restore(emotion_snap)
             self.memory.pop_last_n(self.memory.snapshot_count() - memory_count)
             self.history.pop_last_n(self.history.count() - history_count)
+            self.working_memory.restore(working_memory_snap)
             raise
 
         # 3. 영속화 (실패 시 롤백 불필요 — 아직 저장 안 됨)
@@ -505,6 +526,7 @@ class CharacterOS:
         self.emotion.save()
         self.memory.save()
         self.history.save()
+        self.working_memory.save()
         self._log("영속화 완료", module="postprocess")
 
         self._log("-" * 40, module="postprocess")
@@ -529,8 +551,24 @@ class CharacterOS:
             character=self._character_dir.name,
         )
 
-    def _log_turn(self, user_input: str, response: str, started: float, error: str = "") -> None:
+    def _log_turn(
+        self,
+        user_input: str,
+        response: str,
+        started: float,
+        error: str = "",
+        brain: ThoughtBundle | None = None,
+    ) -> None:
         """턴 요약을 운영 로그에 남긴다. 호출 단위 기록과 turn_id로 이어진다."""
+        extra = (
+            {
+                "iterations": brain.iterations,
+                "hit_cap": brain.hit_cap,
+                "tools_used": brain.tools_used(),
+            }
+            if brain is not None
+            else None
+        )
         self._call_logger.log_turn(
             turn_id=self._turn_id,
             character=self._character_dir.name,
@@ -539,6 +577,7 @@ class CharacterOS:
             metrics=self._collect_metrics(),
             duration_ms=(time.perf_counter() - started) * 1000,
             error=error,
+            extra=extra,
         )
 
     def _collect_metrics(self) -> dict:
@@ -574,17 +613,32 @@ class CharacterOS:
             turn.trace = PipelineTrace()
             turn.trace.start(user_input)
 
-        context = self._run_stage(
+        bundle = self._run_stage(
             turn,
             "context",
-            lambda: self._gather_context(user_input),
-            failure_message="컨텍스트 수집 실패",
-            details=lambda ctx: {
-                "persona_len": len(ctx.persona),
-                "knowledge_len": len(ctx.knowledge_context),
-                "emotion_len": len(ctx.emotion),
-                "memory_len": len(ctx.memory_context),
-                "history_len": len(ctx.history_context),
+            lambda: self._think(user_input),
+            failure_message="사고 실패",
+            details=lambda b: {
+                "iterations": b.iterations,
+                "hit_cap": b.hit_cap,
+                "tools_used": b.tools_used(),
+                "strategy": {
+                    "situation": b.strategy.situation,
+                    "intent": b.strategy.intent,
+                    "avoid": b.strategy.avoid,
+                    "tone": b.strategy.tone,
+                },
+                "tool_calls": [
+                    {
+                        "iteration": r.iteration,
+                        "name": r.name,
+                        "arguments": r.arguments,
+                        "result_len": r.result_len,
+                        "duration_ms": round(r.duration_ms, 1),
+                        "error": r.error,
+                    }
+                    for r in b.tool_calls
+                ],
             },
         )
         if turn.failed:
@@ -593,7 +647,7 @@ class CharacterOS:
         response = self._run_stage(
             turn,
             "response",
-            lambda: self._generate_response(user_input, context),
+            lambda: self._generate_response(user_input, bundle),
             failure_message="응답 생성 실패",
             details=lambda r: {"response_len": len(r)},
         )
@@ -607,7 +661,7 @@ class CharacterOS:
         self._run_stage(
             turn,
             "postprocess",
-            lambda: self._post_process(user_input, response),
+            lambda: self._post_process(user_input, response, bundle),
             failure_message="후처리 실패, 대화가 저장되지 않았습니다",
             details=lambda _: {
                 "emotion_state": dict(self.emotion.get_state()),
@@ -619,7 +673,7 @@ class CharacterOS:
             return None
 
         self._output(f"캐릭터: {response}")
-        self._log_turn(user_input, response, turn.started)
+        self._log_turn(user_input, response, turn.started, brain=bundle)
         self._finish_trace(turn, response=response)
 
         self._log("")

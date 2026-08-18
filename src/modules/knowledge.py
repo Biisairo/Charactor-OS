@@ -4,6 +4,9 @@ import yaml
 
 from src.modules.asset_issue import AssetLoadIssue
 
+# 목차에 실을 문서당 소제목 수. 목차가 본문만큼 길어지면 목차의 의미가 없다.
+MAX_INDEX_HEADINGS = 8
+
 
 class KnowledgeModule:
     """캐릭터가 속한 세계관, 관계, 타임라인, 장소 등 구조화된 지식을 관리한다.
@@ -141,6 +144,66 @@ class KnowledgeModule:
         return self._locations
 
     # ─── 프롬프트 변환 ───
+
+    def to_index(self) -> str:
+        """**무엇을 아는지**만 나열한다. 내용은 담지 않는다 (SPEC-09 REQ-RA-72).
+
+        뇌는 이것을 보고 검색할지 말지 정한다. 목차 없이 도구만 쥐여주면
+        자기가 무엇을 아는지 몰라 검색을 찍게 된다. 반대로 본문까지 실으면
+        루프마다 재전송되어 캐릭터가 커질수록 비용이 선형으로 늘어난다.
+        """
+        lines = []
+
+        if self._world:
+            name = self._world.get("name", "")
+            era = self._world.get("era", "")
+            lines.append(f"- 세계관: {name}{f' ({era})' if era else ''}")
+
+        if self._characters:
+            names = ", ".join(c.get("name", "?") for c in self._characters)
+            lines.append(f"- 인물: {names}")
+
+        if self._locations:
+            names = ", ".join(loc.get("name", "?") for loc in self._locations)
+            lines.append(f"- 장소: {names}")
+
+        if self._relationships:
+            lines.append(f"- 관계 기록: {len(self._relationships)}건")
+
+        if self._timeline:
+            lines.append(f"- 사건 기록: {len(self._timeline)}건")
+
+        for filename, content in self._freeform:
+            headings = self._headings(content)
+            if headings:
+                lines.append(f"- {filename}: {', '.join(headings)}")
+            else:
+                lines.append(f"- 문서: {filename}")
+
+        if not lines:
+            return ""
+
+        return (
+            "[내가 아는 것]\n" + "\n".join(lines) + "\n(자세한 내용은 search_knowledge로 확인한다)"
+        )
+
+    @staticmethod
+    def _headings(content: str, limit: int = MAX_INDEX_HEADINGS) -> list[str]:
+        """마크다운 소제목만 뽑는다. 본문은 담지 않는다.
+
+        파일명만 노출하면 뇌는 그 문서에 무엇이 있는지 알 수 없어 검색을
+        시도조차 하지 않는다 — "쏘하"가 인삿말인 줄 모르는 것이 그 결과였다.
+        """
+        found = []
+        for line in content.split("\n"):
+            stripped = line.strip()
+            if stripped.startswith("##"):
+                title = stripped.lstrip("#").strip()
+                if title:
+                    found.append(title)
+            if len(found) >= limit:
+                break
+        return found
 
     def to_prompt(self) -> str:
         """전체 지식을 프롬프트 문자열로 변환한다. (기존 호환)"""

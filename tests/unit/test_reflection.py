@@ -28,6 +28,7 @@ class SequentialMockClient(MockClient):
         mute: bool = True,
         response_format: dict | None = None,
         token_callback=None,
+        max_tokens=None,
     ):
         resp = self._responses[self._call_index]
         self._call_index += 1

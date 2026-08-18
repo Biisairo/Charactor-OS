@@ -190,15 +190,18 @@ Reflection과 강화된 검토 기준이 **함께 있을 때만** 해결됩니�
                     사용자 입력
                         │
     ┌───────────────────▼───────────────────────────────────┐
-    │ Stage 1 — Context Gathering                           │
-    │   정적:  Persona · Knowledge · FewShot                │
-    │   동적:  Emotion · Memory · History                   │
-    │   → 각 모듈이 입력 관련성에 따라 컨텍스트를 반환        │
+    │ Stage 1 — ReAct 뇌 (캐릭터의 생각)                     │
+    │   기본: 페르소나 · 감정 · 최근 대화 · 지식 목차 · 작업기억│
+    │   "무엇을 더 알아야 답할 수 있는가"를 스스로 판단        │
+    │   도구 반복 호출 (최대 5루프, 자발 종료)                │
+    │     search_memory / search_knowledge / search_fewshot │
+    │     get_relationships / get_history                   │
+    │   → ThoughtBundle (근거 + 응답 전략)                   │
     └───────────────────┬───────────────────────────────────┘
                         │
     ┌───────────────────▼───────────────────────────────────┐
     │ Stage 2 — Response Generation                         │
-    │   PromptEngine: 토큰 예산 내에서 시스템 프롬프트 조립  │
+    │   PromptEngine: 뇌가 모은 것만으로 프롬프트 조립       │
     │   LLM 호출 → 초안                                      │
     │   ReflectionReviewer: 검토 → (필요 시) 재생성 ≤2회     │
     └───────────────────┬───────────────────────────────────┘

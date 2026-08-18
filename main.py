@@ -61,6 +61,7 @@ def main():
         memory_db_path=config.get("memory_db_path"),
         emotion_save_path=config.get("emotion_save_path"),
         history_save_path=config.get("history_save_path"),
+        working_memory_path=config.get("working_memory_path"),
         debug=debug,
         output=print,
         debug_output=print,

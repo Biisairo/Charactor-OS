@@ -50,6 +50,7 @@ async def lifespan(app: FastAPI):
         memory_db_path=config.get("memory_db_path"),
         emotion_save_path=config.get("emotion_save_path"),
         history_save_path=config.get("history_save_path"),
+        working_memory_path=config.get("working_memory_path"),
         model_type=config["model_type"],
         local_model=config["local_model"],
         adapter_path=config["adapter_path"],

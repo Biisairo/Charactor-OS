@@ -11,7 +11,12 @@ from pathlib import Path
 import pytest
 
 from src.llm.client import TrimmedMessage
-from tests.conftest import MockResponse, PipelineMockClient, make_character_os
+from tests.conftest import (
+    MockResponse,
+    PipelineMockClient,
+    default_brain_script,
+    make_character_os,
+)
 
 # ---------------------------------------------------------------------------
 # helpers
@@ -206,9 +211,11 @@ class TestEmotionStateChange:
 
         initial_state = cos.emotion.get_state()
 
-        # mock 순서: Stage 2 응답 → emotion 분석 → memory 분석
+        # mock 순서: 뇌 2회 → Stage 2 응답 → emotion 분석 → memory 분석
+        # call_llm을 통째로 갈아끼우므로 뇌의 도구 호출도 이 대본을 지난다.
         responses = iter(
             [
+                *default_brain_script(),
                 TrimmedMessage(
                     content="아버지는... 말하기 어렵소.",
                     role="assistant",

@@ -39,6 +39,7 @@ class RoutingClient(MockClient):
         mute=True,
         response_format=None,
         token_callback=None,
+        max_tokens=None,
     ) -> TrimmedMessage:
         self.call_count += 1
         self.last_messages = messages

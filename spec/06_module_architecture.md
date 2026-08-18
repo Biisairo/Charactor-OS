@@ -18,7 +18,10 @@ class BaseModule:
 ```
 CharacterOS
     │
-    ├── PromptEngine             (동적 조립, 모든 모듈 참조)
+    ├── PromptEngine             (순수 조립기, 모듈 참조 없음)
+    │
+    ├── ReActBrain               (Stage 1, ToolRegistry로 모듈 호출)
+    │   └── WorkingMemoryModule  (동적, 미해결 질문·가설)
     │
     ├── PersonaModule            (정적, 독립)
     │   └── emotion_triggers → EmotionModule에서 참조
@@ -43,7 +46,8 @@ CharacterOS
 | 관계 | 방향 | 설명 |
 |---|---|---|
 | Persona → Emotion | 간접 | emotion_triggers를 CharacterOS가 Emotion에 전달 |
-| PromptEngine → All | 직접 | 모든 모듈의 to_prompt()/search() 호출 |
+| PromptEngine → All | **없음** | 엔진은 ThoughtBundle과 persona만 받는다 (SPEC-09) |
+| ReActBrain → All | 직접 | ToolRegistry를 통해 도구로 호출 |
 | FewShot ↔ Memory | 공유 | 동일한 embedding_fn 사용 |
 | Emotion → Memory | 간접 | 감정 태그를 CharacterOS가 Memory에 전달 |
 
@@ -80,43 +84,30 @@ class CharacterOS:
         self.emotion.set_triggers(self.persona.get_emotion_triggers())
 
     def chat(self, user_input: str) -> str:
-        # Stage 1: 컨텍스트 수집
-        context = self._gather_context(user_input)
+        # Stage 1: 뇌 — 무엇이 필요한지 판단하고 도구로 모은다
+        bundle = self._think(user_input)
 
-        # Stage 2: 프롬프트 조립 + 응답 생성
-        system_prompt = self.prompt_engine.assemble_system_prompt(
-            user_input=user_input,
-            persona=self.persona,
-            emotion=self.emotion,
-            memory=self.memory,
-            knowledge=self.knowledge,
-            history=self.history,
-            fewshot=self.fewshot,
-        )
-        response = self._generate_response(system_prompt, user_input)
+        # Stage 2: 프롬프트 조립 + 응답 생성 (뇌가 모은 것만 쓴다)
+        system_prompt = self.prompt_engine.assemble_system_prompt(self.persona, bundle)
+        response = self._generate_response(user_input, bundle)
 
-        # Stage 3: 후처리
-        self._post_process(user_input, response)
+        # Stage 3: 후처리 (작업기억 포함)
+        self._post_process(user_input, response, bundle)
 
         return response
 ```
 
-### _gather_context()
+### _think()
 
 ```python
-def _gather_context(self, user_input: str) -> dict:
-    """Stage 1: 각 모듈에서 raw 데이터 수집."""
-    return {
-        "persona": self.persona,  # 모듈 참조 자체를 전달
-        "emotion": self.emotion,
-        "memory": self.memory,
-        "knowledge": self.knowledge,
-        "history": self.history,
-        "fewshot": self.fewshot,
-    }
+def _think(self, user_input: str) -> ThoughtBundle:
+    """Stage 1: 뇌가 도구를 골라 근거를 모으고 응답 전략을 세운다."""
+    return self.brain.think(user_input)
 ```
 
-PromptEngine에 모듈 참조를 전달하고, PromptEngine이 직접 각 모듈의 메서드를 호출하여 조립한다.
+**PromptEngine은 모듈을 참조하지 않는다** (SPEC-09 REQ-RA-30). 예전에는 모듈 참조를
+넘겨 엔진이 직접 검색했고, 그 결과 Stage 1과 엔진이 같은 검색을 두 번 돌았다.
+이제 검색의 단일 실행 지점은 뇌이며, 번들에 담긴 것만 프롬프트가 된다.
 
 ### _generate_response()
 

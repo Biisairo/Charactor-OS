@@ -81,6 +81,7 @@ async def switch_character(req: SwitchCharacterRequest):
         memory_db_path=deps.get_config().get("memory_db_path"),
         emotion_save_path=deps.get_config().get("emotion_save_path"),
         history_save_path=deps.get_config().get("history_save_path"),
+        working_memory_path=deps.get_config().get("working_memory_path"),
         model_type=deps.get_config().get("model_type", "api"),
         local_model=deps.get_config().get("local_model", "mlx-community/Qwen3.5-4B-MLX-4bit"),
         adapter_path=deps.get_config().get("adapter_path"),
@@ -177,7 +178,9 @@ def _write_knowledge_assets(
     locations_filled = knowledge is not None and bool(knowledge.locations)
     relationships_filled = knowledge is not None and bool(knowledge.relationships)
     timeline_filled = knowledge is not None and bool(knowledge.timeline)
-    freeform_filled = knowledge is not None and bool(knowledge.freeform and knowledge.freeform.strip())
+    freeform_filled = knowledge is not None and bool(
+        knowledge.freeform and knowledge.freeform.strip()
+    )
 
     if world_filled:
         _dump_yaml(knowledge_dir / "world.yaml", {"type": "world", **knowledge.world})
@@ -284,9 +287,7 @@ def get_character_draft(character_id: str):
     """
     char_dir = safe_child(CHARACTERS_DIR, character_id, SAFE_SEGMENT)
     if not CharacterLayout.of(char_dir).is_character():
-        raise HTTPException(
-            status_code=404, detail=f"캐릭터를 찾을 수 없습니다: {character_id}"
-        )
+        raise HTTPException(status_code=404, detail=f"캐릭터를 찾을 수 없습니다: {character_id}")
 
     layout = CharacterLayout.of(char_dir)
     persona = _load_yaml(layout.persona_path) or {}
@@ -327,9 +328,7 @@ def update_character_static(character_id: str, req: CharacterStaticData):
     """
     char_dir = safe_child(CHARACTERS_DIR, character_id, SAFE_SEGMENT)
     if not CharacterLayout.of(char_dir).is_character():
-        raise HTTPException(
-            status_code=404, detail=f"캐릭터를 찾을 수 없습니다: {character_id}"
-        )
+        raise HTTPException(status_code=404, detail=f"캐릭터를 찾을 수 없습니다: {character_id}")
 
     layout = CharacterLayout.of(char_dir)
     if req.persona is not None:

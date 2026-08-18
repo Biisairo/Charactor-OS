@@ -21,6 +21,14 @@ from dataclasses import dataclass
 # 상한은 모델이 지시를 어겼을 때의 안전망이다. 실제 축소는 구조화 출력이 한다.
 MAX_FEEDBACK_CHARS = 200
 
+# 검토 출력 상한.
+#
+# `MAX_FEEDBACK_CHARS`는 생성이 **끝난 뒤** 자르는 장치라 지연에 아무 효과가 없다.
+# 실측에서 검토기가 `PASS`를 내면서 2,938 출력 토큰을 썼다 — 7개 기준을 하나씩
+# 논평한 결과다(TASK-09가 프롬프트로 다뤘으나 재발). 정상 출력은 13~82 토큰이므로
+# 여유를 크게 두고도 폭주만 잘라낼 수 있다.
+MAX_REVIEW_OUTPUT_TOKENS = 400
+
 # ---------------------------------------------------------------------------
 # 검토 결과
 # ---------------------------------------------------------------------------
@@ -232,6 +240,7 @@ class ReflectionReviewer:
             use_stream=False,
             mute=True,
             response_format={"type": "json_object"},
+            max_tokens=MAX_REVIEW_OUTPUT_TOKENS,
         )
 
         response = (result.content or "").strip()

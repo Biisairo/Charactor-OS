@@ -6,6 +6,7 @@ from dataclasses import dataclass
 import openai
 from dotenv import load_dotenv
 from openai import (
+    APITimeoutError,
     AuthenticationError,
     BadRequestError,
     InternalServerError,
@@ -24,6 +25,11 @@ from openai.types.chat import (
 # ---------------------------------------------------------------------------
 
 MAX_RETRIES = 3
+
+# 요청 타임아웃. 지정하지 않으면 openai SDK 기본값 600초가 적용되어,
+# 느린 프로바이더 응답 하나가 워커 큐 전체를 10분간 막을 수 있다.
+# 실측에서 374초 만에 **성공한** 호출이 있었다 (SPEC-09 §6.8).
+DEFAULT_TIMEOUT_SECONDS = 120.0
 
 # ---------------------------------------------------------------------------
 # Types
@@ -65,14 +71,28 @@ class Client:
     env: LLMEnv
     llm: openai.OpenAI
 
-    def __init__(self, env: LLMEnv | None = None):
+    def __init__(self, env: LLMEnv | None = None, timeout: float | None = None):
         """
         Args:
             env: LLM 접속 설정. 생략하면 환경 변수에서 읽는다.
                 평가 판정자처럼 대화용과 다른 자격 증명·모델을 쓰는 경우에 주입한다.
+            timeout: 요청 타임아웃(초). 생략하면 `OPENAI_TIMEOUT` 환경 변수,
+                그것도 없으면 `DEFAULT_TIMEOUT_SECONDS`를 쓴다.
         """
         self.env = env or self._get_env()
-        self.llm = openai.OpenAI(api_key=self.env.api_key, base_url=self.env.base_url)
+        self.llm = openai.OpenAI(
+            api_key=self.env.api_key,
+            base_url=self.env.base_url,
+            timeout=timeout if timeout is not None else self._get_timeout(),
+        )
+
+    @staticmethod
+    def _get_timeout() -> float:
+        load_dotenv()
+        raw = os.getenv("OPENAI_TIMEOUT")
+        if not raw:
+            return DEFAULT_TIMEOUT_SECONDS
+        return float(raw)
 
     # ---------------------------------------------------------------------------
     # Env
@@ -99,7 +119,14 @@ class Client:
         mute: bool,
         response_format: dict | None = None,
         token_callback: "Callable[[str], None] | None" = None,
+        max_tokens: int | None = None,
     ) -> TrimmedMessage:
+        """
+        Args:
+            max_tokens: 출력 상한. 프롬프트로 "간결하게"를 지시해도 모델은
+                지키지 않을 수 있고, 생성 후 자르기는 지연을 줄이지 못한다.
+                폭주를 구조적으로 막아야 하는 호출에만 지정한다.
+        """
         for attempt in range(MAX_RETRIES):
             try:
                 if use_stream:
@@ -110,6 +137,7 @@ class Client:
                             tools=tools,
                             stream=True,
                             response_format=response_format,
+                            max_completion_tokens=max_tokens,
                             stream_options={"include_usage": True},
                         ),
                         mute,
@@ -123,10 +151,11 @@ class Client:
                             tools=tools,
                             stream=False,
                             response_format=response_format,
+                            max_completion_tokens=max_tokens,
                         ),
                         mute,
                     )
-            except (RateLimitError, InternalServerError):
+            except (RateLimitError, InternalServerError, APITimeoutError):
                 if attempt == MAX_RETRIES - 1:
                     raise
                 time.sleep(2**attempt)

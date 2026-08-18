@@ -225,3 +225,41 @@ class TestTraceOutput:
         output = format_trace(trace)
         assert "미상" not in output
         assert "거부" not in output
+
+
+class TestToolCallsAreNotRefusals:
+    """도구를 부른 응답은 본문이 비어 있다. 그것을 거부로 세면 안 된다 (SPEC-09)."""
+
+    def test_empty_content_with_tool_calls_is_not_refused(self):
+        from src.llm.client import ToolCallPart, TrimmedMessage
+        from src.metrics import CallMeter
+
+        class _ToolCallingClient:
+            def call_llm(self, **kwargs):
+                return TrimmedMessage(
+                    content="",
+                    role="assistant",
+                    reasoning_content="",
+                    tool_calls=[ToolCallPart(id="1", name="search_memory", arguments="{}")],
+                    usage=None,
+                )
+
+        meter = CallMeter()
+        meter.wrap(_ToolCallingClient(), "react").call_llm(messages=[], tools=[])
+
+        assert meter.summary()["refused_calls"] == 0
+
+    def test_empty_content_without_tool_calls_is_still_refused(self):
+        from src.llm.client import TrimmedMessage
+        from src.metrics import CallMeter
+
+        class _EmptyClient:
+            def call_llm(self, **kwargs):
+                return TrimmedMessage(
+                    content="", role="assistant", reasoning_content="", tool_calls=[], usage=None
+                )
+
+        meter = CallMeter()
+        meter.wrap(_EmptyClient(), "response").call_llm(messages=[], tools=[])
+
+        assert meter.summary()["refused_calls"] == 1

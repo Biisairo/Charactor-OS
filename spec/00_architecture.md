@@ -26,7 +26,9 @@ Persona 스키마 확장, Knowledge 구조화, Few-shot 예시 시스템, 프롬
 | **Knowledge** | 정적 | `src/modules/knowledge.py` | - | 세계관, 관계 그래프, 타임라인, 장소, 자유 형식 |
 | **History** | 동적 | `src/modules/history.py` | - | 대화 기록 관리, 최근 N개 조회 |
 | **FewShot** | 정적 | `src/modules/fewshot.py` | 신규 | 예시 대화 검색, 태그/임베딩/감정 기반 |
-| **PromptEngine** | - | `src/prompts/engine.py` | 신규 | 동적 프롬프트 조립, 토큰 예산 관리 |
+| **WorkingMemory** | 동적 | `src/modules/working_memory.py` | 신규 | 미해결 질문·가설, 턴 너머 유지 (SPEC-09) |
+| **ReActBrain** | - | `src/agent/brain.py` | 신규 | Stage 1. 도구 루프로 근거 수집 + 응답 전략 (SPEC-09) |
+| **PromptEngine** | - | `src/prompts/engine.py` | 신규 | 프롬프트 조립, 토큰 예산 관리 (모듈 참조 없음) |
 
 ## 4. 3단계 파이프라인
 
@@ -35,26 +37,33 @@ Persona 스키마 확장, Knowledge 구조화, Few-shot 예시 시스템, 프롬
     │
     ▼
 ┌──────────────────────────────────────────────────────────────┐
-│  Stage 1: Context Gathering                                  │
+│  Stage 1: ReAct 뇌 (SPEC-09)                                  │
 │                                                              │
-│  사용자 입력 분석 → 각 모듈에서 컨텍스트 수집                    │
+│  기본으로 아는 것 (도구 없이 프롬프트에 실림):                    │
+│  - 페르소나 · 행동 지침 · 내면 상태                              │
+│  - 현재 감정 · 최근 대화 5턴 · 작업기억                          │
+│  - 지식 "목차" (무엇을 아는지의 목록. 본문은 도구로)              │
 │                                                              │
-│  수집 대상:                                                    │
-│  - persona (항상): 성격, 말투, 행동 지침, 내면 상태             │
-│  - emotion (항상): 현재 감정 상태                              │
-│  - knowledge (선택): 세계관, 캐릭터, 관계 (관련성 기반)         │
-│  - fewshot (선택): 예시 대화 (관련성 + 감정 기반)              │
-│  - memory (선택): 관련 기억 (벡터 검색)                        │
-│  - history (항상): 최근 N개 대화                               │
+│  "이 말에 답하려면 무엇을 더 알아야 하는가"를 판단하고            │
+│  도구를 반복 호출한다. 최대 5루프, 자발 종료.                    │
 │                                                              │
-│  산출물: 각 모듈의 raw 데이터                                  │
+│  도구 (찾아야 아는 것만):                                        │
+│  - search_memory(query, top_k)     - get_relationships(name)  │
+│  - search_knowledge(query)          - get_history(n)          │
+│  - search_fewshot(query, emotion)                             │
+│  - finish(...)  ← 종료 선언이자 응답 전략 확정                   │
+│                                                              │
+│  작업기억: 미해결 질문·가설을 턴을 넘겨 유지한다                  │
+│                                                              │
+│  산출물: ThoughtBundle — 호출한 도구의 결과 + 응답 전략          │
+│          (상황 / 할 말 / 피할 것 / 태도)                        │
 └──────────────────────────────────────────────────────────────┘
     │
     ▼
 ┌──────────────────────────────────────────────────────────────┐
 │  Stage 2: Response Generation                                │
 │                                                              │
-│  PromptEngine이 모든 모듈 데이터를 동적 조립:                   │
+│  PromptEngine이 뇌의 번들만 받아 조립 (모듈 접근 없음):          │
 │  1. Always 섹션 (Identity, Persona, Behavior, InnerWorld,     │
 │     Emotion, ResponseGuide)                                  │
 │  2. Context 섹션 예산 배분:                                    │
@@ -84,15 +93,21 @@ Persona 스키마 확장, Knowledge 구조화, Few-shot 예시 시스템, 프롬
 ```
 사용자: "오늘 시험 봤는데 완전 망했어"
 
-Stage 1 (Context Gathering):
-├─ persona: 전체 페르소나
-│   → 성격, 말투, 행동 지침, 내면 상태
-├─ emotion: { "장난기": 0.7 }
-├─ emotion_triggers: "시험" → 관련 트리거 없음
-├─ knowledge.search_relevant("시험") → 관련 지식 없음
-├─ fewshot.search("시험 망했어", emotions) → "위로" 태그 예시 2개
-├─ memory.search("시험") → ["사용자는 대학생"]
-├─ history.get_recent(5) → 최근 대화 5개
+Stage 1 (ReAct 뇌):
+  (감정 { "장난기": 0.7 }·최근 대화·지식 목차는 이미 알고 시작한다)
+
+[1] search_memory("사용자의 학업 상황")       → ["사용자는 대학생"]
+[2] ← 기억을 보고 판단: 위로가 필요한 상황이다
+    search_fewshot("시험 망했다고 털어놓음")   → "위로" 태그 예시 2개
+[3] finish(
+      situation = "사용자가 시험을 망쳤다고 털어놓았다",
+      intent    = "먼저 공감하고, 어디가 어려웠는지 물어본다",
+      avoid     = "섣부른 조언이나 훈계",
+      tone      = "장난기를 누르고 부드럽게",
+      new_thoughts = [{ kind: "question", content: "시험 결과가 언제 나오는지 모르겠다" }]
+    )
+
+  → 부르지 않은 도구(knowledge · relationships)는 프롬프트에 아예 없다
 
 Stage 2 (PromptEngine 조립):
 ├─ [Identity] "당신은 유나입니다."
@@ -104,6 +119,7 @@ Stage 2 (PromptEngine 조립):
 ├─ [Few-shot] 관련 예시 2개 (위로 상황)
 ├─ [Memory] "사용자는 대학생"
 ├─ [History] 최근 대화 5개
+├─ [내적 사고] 상황 / 할 말 / 피할 것 / 태도  ← 뇌의 전략
 ├─ [Response Guide] 응답 규칙
 └─ → LLM 호출 → "아 정말? 시험 망했다니 속상하겠다 ㅠㅠ 어디가 어려웠어?"
 
@@ -111,6 +127,7 @@ Stage 3 (Post-processing):
 ├─ Emotion.update() → 장난기 감소, 공감 증가
 │   (persona의 emotion_triggers와 연동)
 ├─ Memory.update() → "사용자가 시험을 망쳤다"
+├─ WorkingMemory.apply() → 미해결 질문 1건 추가
 └─ History.update() → 턴 저장
 ```
 

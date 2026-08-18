@@ -98,6 +98,7 @@ class TestLabelsCoverKnownSites:
         cos.chat("안녕하시오")
 
         assert set(cos._meter.summary()["by_label"]) == {
+            "react",
             "response",
             "reflection",
             "emotion",

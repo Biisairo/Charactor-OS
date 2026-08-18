@@ -4,11 +4,12 @@ character_dir: characters/hong-gil-dong
 # 저장 경로
 #
 # 생략하면 characters/<id>/state/ 아래로 파생한다 (캐릭터마다 분리).
-# 아래 세 키를 명시하면 그 경로를 그대로 쓰며, 이 경우 모든 캐릭터가
+# 아래 키를 명시하면 그 경로를 그대로 쓰며, 이 경우 모든 캐릭터가
 # 같은 저장소를 공유한다 — 2026-08-12 이전의 동작이다.
 #   memory_db_path: memory/memories.db
 #   emotion_save_path: memory/emotions.json
 #   history_save_path: memory/history.json
+#   working_memory_path: memory/working_memory.json
 
 # 모델 설정
 # model_type: "api" (OpenAI API) 또는 "local" (mlx-lm 로컬)

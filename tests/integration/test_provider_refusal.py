@@ -17,8 +17,14 @@ from pathlib import Path
 
 import pytest
 
+from src.agent.tools import FINISH_TOOL
 from src.llm.client import TrimmedMessage
-from tests.conftest import MockClient, PipelineMockClient, make_character_os
+from tests.conftest import (
+    MockClient,
+    PipelineMockClient,
+    default_brain_script,
+    make_character_os,
+)
 
 REFUSAL = "The request was rejected because it was considered high risk"
 VALID = "흠, 그리 말하니 반갑구나."
@@ -30,9 +36,13 @@ class SequenceClient(MockClient):
     마지막 응답에 도달하면 그 값을 계속 반환한다.
     """
 
-    def __init__(self, responses: list[str]):
+    def __init__(self, responses: list[str], brain_ok: bool = True):
         super().__init__(response=responses[0])
         self._responses = list(responses)
+        # 검증 대상은 Stage 2의 거부 처리다. 뇌까지 거부시키면 턴이 그 앞에서
+        # 끝나 정작 보려는 경로를 지나지 않는다.
+        self._brain_ok = brain_ok
+        self._brain_steps: list = []
 
     def call_llm(
         self,
@@ -42,7 +52,17 @@ class SequenceClient(MockClient):
         mute=True,
         response_format=None,
         token_callback=None,
+        max_tokens=None,
     ) -> TrimmedMessage:
+        is_brain = bool(tools) and any(
+            t.get("function", {}).get("name") == FINISH_TOOL for t in tools
+        )
+        if is_brain and self._brain_ok:
+            if not self._brain_steps:
+                self._brain_steps = default_brain_script()
+            self.call_count += 1
+            return self._brain_steps.pop(0)
+
         index = min(self.call_count, len(self._responses) - 1)
         self.call_count += 1
         self.last_messages = messages
@@ -101,11 +121,12 @@ class TestRefusalNotShown:
         cos = make_character_os(character_dir, tmp_path / "state", client)
         cos.chat("안녕")
 
+        # 뇌 호출도 시스템 프롬프트에 페르소나를 싣는다. 응답 호출은 [응답 규칙]으로 가른다.
         response_calls = [
             record
             for record in client.all_call_records
             if any(
-                m.get("role") == "system" and "홍길동" in str(m.get("content", ""))
+                m.get("role") == "system" and "[응답 규칙]" in str(m.get("content", ""))
                 for m in record["messages"]
             )
         ]

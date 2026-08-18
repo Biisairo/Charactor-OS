@@ -117,3 +117,43 @@ def test_to_prompt_contains_world_info(module: KnowledgeModule) -> None:
     assert world is not None
     prompt = module.to_prompt()
     assert world.get("name", "") in prompt or "세계관" in prompt
+
+
+class TestIndexExposesDocumentHeadings:
+    """목차는 파일명이 아니라 **무엇이 들어있는지**를 보여야 한다 (SPEC-09 REQ-RA-80).
+
+    파일명만 있으면 뇌는 그 문서에 인삿말 규칙이 있는지 알 수 없어 검색을
+    시도조차 하지 않는다. 실사용에서 관측된 결함이다.
+    """
+
+    def _module(self, tmp_path, body: str):
+        (tmp_path / "broadcast.md").write_text(body, encoding="utf-8")
+        module = KnowledgeModule(str(tmp_path))
+        module.load_all()
+        return module
+
+    def test_headings_appear_in_index(self, tmp_path):
+        body = "# 방송 정보\n\n## 스케줄\n주 5회\n\n## 시청자 호칭과 문화\n인사는 쏘하\n"
+
+        index = self._module(tmp_path, body).to_index()
+
+        assert "시청자 호칭과 문화" in index
+
+    def test_body_text_is_not_in_index(self, tmp_path):
+        body = "# 방송 정보\n\n## 시청자 호칭과 문화\n방송 시작 인사는 쏘하로 고정되어 있다\n"
+
+        index = self._module(tmp_path, body).to_index()
+
+        assert "고정되어 있다" not in index
+
+    def test_document_without_headings_falls_back_to_filename(self, tmp_path):
+        index = self._module(tmp_path, "제목 없는 그냥 본문입니다").to_index()
+
+        assert "broadcast.md" in index
+
+    def test_heading_count_is_capped(self, tmp_path):
+        body = "\n".join(f"## 소제목 {i}\n내용\n" for i in range(30))
+
+        index = self._module(tmp_path, body).to_index()
+
+        assert index.count("소제목") <= 8

@@ -127,8 +127,12 @@ class CallLogger:
         metrics: dict,
         duration_ms: float,
         error: str = "",
+        extra: dict | None = None,
     ) -> None:
-        """턴 1건의 요약. 호출 단위 기록과 turn_id로 이어진다."""
+        """턴 1건의 요약. 호출 단위 기록과 turn_id로 이어진다.
+
+        `extra`는 턴마다 달라지는 부가 요약(뇌의 루프 수·사용 도구 등)이다.
+        """
         if not self.enabled:
             return
 
@@ -149,6 +153,7 @@ class CallLogger:
             "model": metrics.get("model", ""),
             "by_label": metrics.get("by_label", {}),
             "error": error,
+            **(extra or {}),
         }
         with contextlib.suppress(Exception):
             self._logger.info("", extra={"payload": payload})

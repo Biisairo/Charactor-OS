@@ -24,6 +24,7 @@ STATE_DIRNAME = "state"
 MEMORY_DB_FILENAME = "memories.db"
 EMOTION_FILENAME = "emotions.json"
 HISTORY_FILENAME = "history.json"
+WORKING_MEMORY_FILENAME = "working_memory.json"
 
 
 @dataclass(frozen=True)
@@ -71,6 +72,10 @@ class CharacterLayout:
     @property
     def history_save_path(self) -> Path:
         return self.state_dir / HISTORY_FILENAME
+
+    @property
+    def working_memory_path(self) -> Path:
+        return self.state_dir / WORKING_MEMORY_FILENAME
 
     def is_character(self) -> bool:
         """캐릭터 디렉토리로 인정할 수 있는가. persona.yaml의 존재로 판단한다."""
