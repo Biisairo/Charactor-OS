@@ -2,7 +2,11 @@
 
 from __future__ import annotations
 
-from src.modules.reflection import ReflectionReviewer, ReviewResult
+from src.modules.reflection import (
+    ReflectionReviewer,
+    ReviewResult,
+    parse_review_response,
+)
 from tests.conftest import MockClient, MockResponse
 
 # ---------------------------------------------------------------------------
@@ -297,11 +301,22 @@ class TestReviewCriteriaFromEvaluation:
         assert "중국어" in prompt
 
     def test_checks_era_consistency(self):
-        """관측된 결함: 조선 시대 캐릭터가 '서울'이라는 현대 지명 사용."""
-        prompt = self._prompt()
+        """관측된 결함: 조선 시대 캐릭터가 '서울'이라는 현대 지명 사용.
+
+        TASK-19 이후 이 기준은 캐릭터의 `era`에서 파생된다. 시대를 아는
+        캐릭터에서는 여전히 검사하되, 예시를 조선시대로 박아두지는 않는다.
+        """
+        reviewer = ReflectionReviewer(
+            client=MockClient(),
+            persona=_make_persona(),
+            emotion=_make_emotion(),
+            knowledge=_Knowledge({"era": "조선 중기 (16세기)"}),
+        )
+
+        prompt = reviewer._build_review_prompt("안녕하시오", "안녕하세요")
 
         assert "시대 정합성" in prompt
-        assert "한양" in prompt
+        assert "조선 중기 (16세기)" in prompt
 
     def test_checks_persona_break(self):
         """관측된 결함: '파이썬 코드 짜줘'에 실제 코드를 작성."""
@@ -322,3 +337,169 @@ class TestReviewCriteriaFromEvaluation:
         prompt = self._prompt()
 
         assert "사소한 취향 차이로 FAIL" in prompt
+
+
+# ---------------------------------------------------------------------------
+# TASK-19 — 검토 기준을 캐릭터에서 파생하고, 판정을 관대하게 읽는다
+#
+# 착수 시점 FAIL율: hong-gil-dong 44% · han-so-min 66%.
+# 소민 FAIL의 43%가 "시대 정합성"이었다 — 2020년대 스트리머에게 조선시대
+# 기준을 적용한 결과다.
+# ---------------------------------------------------------------------------
+
+
+class _Knowledge:
+    """세계관 스텁. era가 없는 캐릭터도 표현할 수 있어야 한다."""
+
+    def __init__(self, world: dict | None):
+        self._world = world
+
+    def get_world(self) -> dict | None:
+        return self._world
+
+
+def _reviewer_with_world(world: dict | None, name: str = "소민찌") -> ReflectionReviewer:
+    return ReflectionReviewer(
+        client=MockClient(),
+        persona=_make_persona(name),
+        emotion=_make_emotion(),
+        knowledge=_Knowledge(world),
+    )
+
+
+class TestEraComesFromTheCharacter:
+    """REQ-19-1 · 19-2"""
+
+    def _prompt(self, world: dict | None) -> str:
+        return _reviewer_with_world(world)._build_review_prompt("안녕", "안녕하세요")
+
+    def test_modern_character_prompt_states_its_own_era(self):
+        prompt = self._prompt({"era": "2020년대 후반 대한민국 서울"})
+
+        assert "2020년대 후반 대한민국 서울" in prompt
+
+    def test_modern_character_prompt_has_no_joseon_examples(self):
+        """'서울 → 한양'을 현대 스트리머에게 들이대면 정상 응답이 FAIL된다."""
+        prompt = self._prompt({"era": "2020년대 후반 대한민국 서울"})
+
+        assert "한양" not in prompt
+
+    def test_historical_character_still_gets_its_era(self):
+        prompt = self._prompt({"era": "조선 중기 (16세기)"})
+
+        assert "조선 중기 (16세기)" in prompt
+
+    def test_missing_era_drops_the_criterion(self):
+        """근거 없는 기준으로 FAIL을 주느니 검사하지 않는다 (REQ-19-2)."""
+        prompt = self._prompt(None)
+
+        assert "시대 정합성" not in prompt
+
+    def test_world_without_era_drops_the_criterion(self):
+        prompt = self._prompt({"name": "이름만 있는 세계관"})
+
+        assert "시대 정합성" not in prompt
+
+    def test_other_criteria_survive_without_era(self):
+        prompt = self._prompt(None)
+
+        assert "응답 언어" in prompt
+        assert "페르소나 유지" in prompt
+
+    def test_knowledge_is_optional(self):
+        """knowledge 없이 만들어도 검토는 동작해야 한다 (기존 호출부 호환)."""
+        reviewer = ReflectionReviewer(
+            client=MockClient(), persona=_make_persona(), emotion=_make_emotion()
+        )
+
+        assert "시대 정합성" not in reviewer._build_review_prompt("안녕", "안녕하세요")
+
+
+class TestVerdictParsingIsLenient:
+    """REQ-19-3 — 모델은 `- PASS:`, `**PASS**`처럼 꾸며서 답한다."""
+
+    def test_list_bullet_pass(self):
+        assert parse_review_response("- PASS").approved is True
+
+    def test_list_bullet_pass_with_comment(self):
+        assert parse_review_response("- PASS: 응답이 모든 기준을 충족합니다.").approved is True
+
+    def test_bold_pass(self):
+        assert parse_review_response("**PASS**").approved is True
+
+    def test_heading_pass(self):
+        assert parse_review_response("## PASS").approved is True
+
+    def test_bold_fail_is_still_fail(self):
+        result = parse_review_response("**FAIL**: 영어 단어가 섞였습니다")
+
+        assert result.approved is False
+        assert "영어" in result.feedback
+
+    def test_bullet_fail_keeps_feedback(self):
+        result = parse_review_response("- FAIL: 말투가 어긋납니다")
+
+        assert result.approved is False
+        assert "말투" in result.feedback
+
+    def test_plain_text_is_still_fail(self):
+        """판정을 못 읽으면 통과시키지 않는다 — 안전한 쪽으로 기운다."""
+        assert parse_review_response("음... 애매하네요").approved is False
+
+    def test_empty_is_fail(self):
+        assert parse_review_response("").approved is False
+
+
+class TestReviewStatsAreRecorded:
+    """REQ-19-4 — FAIL율을 계속 추적하려면 판정이 값으로 남아야 한다."""
+
+    def test_verdicts_are_collected(self):
+        client = SequentialMockClient(
+            [
+                MockResponse(content='{"verdict": "FAIL", "feedback": "말투"}'),
+                MockResponse(content='{"verdict": "PASS", "feedback": ""}'),
+            ]
+        )
+        reviewer = _make_reviewer(client)
+
+        reviewer.review_and_improve("안녕", "초안", lambda _fb: "재생성본")
+
+        assert reviewer.last_verdicts == ["FAIL", "PASS"]
+
+    def test_regeneration_count_is_recorded(self):
+        client = SequentialMockClient(
+            [
+                MockResponse(content='{"verdict": "FAIL", "feedback": "말투"}'),
+                MockResponse(content='{"verdict": "PASS", "feedback": ""}'),
+            ]
+        )
+        reviewer = _make_reviewer(client)
+
+        reviewer.review_and_improve("안녕", "초안", lambda _fb: "재생성본")
+
+        assert reviewer.last_regenerations == 1
+
+    def test_clean_pass_records_no_regeneration(self):
+        client = SequentialMockClient([MockResponse(content='{"verdict": "PASS"}')])
+        reviewer = _make_reviewer(client)
+
+        reviewer.review_and_improve("안녕", "초안", lambda _fb: "재생성본")
+
+        assert reviewer.last_regenerations == 0
+        assert reviewer.last_verdicts == ["PASS"]
+
+    def test_stats_reset_between_turns(self):
+        client = SequentialMockClient(
+            [
+                MockResponse(content='{"verdict": "FAIL", "feedback": "말투"}'),
+                MockResponse(content='{"verdict": "PASS"}'),
+                MockResponse(content='{"verdict": "PASS"}'),
+            ]
+        )
+        reviewer = _make_reviewer(client)
+
+        reviewer.review_and_improve("안녕", "초안", lambda _fb: "재생성본")
+        reviewer.review_and_improve("또 안녕", "초안2", lambda _fb: "재생성본2")
+
+        assert reviewer.last_verdicts == ["PASS"]
+        assert reviewer.last_regenerations == 0

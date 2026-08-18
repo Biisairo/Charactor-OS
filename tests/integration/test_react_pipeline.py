@@ -9,6 +9,7 @@ from __future__ import annotations
 import json
 from pathlib import Path
 
+from src.call_log import CallLogger
 from src.character_layout import CharacterLayout
 from tests.conftest import (
     DEFAULT_BRAIN_STRATEGY,
@@ -272,3 +273,48 @@ class TestWorkingMemoryIntegration:
         layout = CharacterLayout.of(character_dir)
 
         assert layout.working_memory_path.parent == layout.state_dir
+
+
+# ---------------------------------------------------------------------------
+# 6. 검토 기준과 추적 (TASK-19)
+# ---------------------------------------------------------------------------
+
+
+class TestReviewCriteriaComeFromCharacter:
+    def test_review_prompt_states_the_character_era(self, character_dir, tmp_path):
+        client = PipelineMockClient()
+        cos = _cos(character_dir, tmp_path, client, no_review=False)
+
+        prompt = cos.reviewer._build_review_prompt("안녕", "초안")
+
+        assert "조선" in prompt
+
+    def test_review_prompt_has_no_hardcoded_era_example(self, character_dir, tmp_path):
+        """다른 캐릭터의 시대를 예시로 박아두면 정상 응답이 FAIL된다."""
+        client = PipelineMockClient()
+        cos = _cos(character_dir, tmp_path, client, no_review=False)
+
+        assert "한양" not in cos.reviewer._build_review_prompt("안녕", "초안")
+
+
+class TestReviewStatsAreLogged:
+    def test_turn_log_carries_verdicts(self, character_dir, tmp_path):
+        recorded: list[dict] = []
+
+        class _CapturingLogger(CallLogger):
+            def log_turn(self, **kwargs):
+                recorded.append(kwargs)
+
+        client = PipelineMockClient(response='{"verdict": "PASS"}')
+        cos = _cos(
+            character_dir,
+            tmp_path,
+            client,
+            no_review=False,
+            call_logger=_CapturingLogger(enabled=False),
+        )
+
+        cos.chat("안녕")
+
+        assert "review_verdicts" in recorded[-1]["extra"]
+        assert "regenerations" in recorded[-1]["extra"]

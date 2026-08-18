@@ -261,6 +261,8 @@ class CharacterOS:
                 client=self._meter.wrap(self.client, "reflection"),
                 persona=self.persona,
                 emotion=self.emotion,
+                # 시대 정합성 기준은 이 캐릭터의 세계관에서 파생한다 (TASK-19).
+                knowledge=self.knowledge,
                 debug=debug,
                 debug_output=self._debug_output,
             )
@@ -560,15 +562,23 @@ class CharacterOS:
         brain: ThoughtBundle | None = None,
     ) -> None:
         """턴 요약을 운영 로그에 남긴다. 호출 단위 기록과 turn_id로 이어진다."""
-        extra = (
-            {
-                "iterations": brain.iterations,
-                "hit_cap": brain.hit_cap,
-                "tools_used": brain.tools_used(),
-            }
-            if brain is not None
-            else None
-        )
+        extra: dict = {}
+        if brain is not None:
+            extra.update(
+                {
+                    "iterations": brain.iterations,
+                    "hit_cap": brain.hit_cap,
+                    "tools_used": brain.tools_used(),
+                }
+            )
+        if self.reviewer is not None:
+            # FAIL율은 계속 추적해야 한다 — 검토 기준을 바꿀 때마다 근거가 필요하다.
+            extra.update(
+                {
+                    "review_verdicts": list(self.reviewer.last_verdicts),
+                    "regenerations": self.reviewer.last_regenerations,
+                }
+            )
         self._call_logger.log_turn(
             turn_id=self._turn_id,
             character=self._character_dir.name,
@@ -577,7 +587,7 @@ class CharacterOS:
             metrics=self._collect_metrics(),
             duration_ms=(time.perf_counter() - started) * 1000,
             error=error,
-            extra=extra,
+            extra=extra or None,
         )
 
     def _collect_metrics(self) -> dict:

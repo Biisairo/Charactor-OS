@@ -8,6 +8,7 @@
 from __future__ import annotations
 
 import json
+import re
 from collections.abc import Callable
 from dataclasses import dataclass
 
@@ -28,6 +29,9 @@ MAX_FEEDBACK_CHARS = 200
 # 논평한 결과다(TASK-09가 프롬프트로 다뤘으나 재발). 정상 출력은 13~82 토큰이므로
 # 여유를 크게 두고도 폭주만 잘라낼 수 있다.
 MAX_REVIEW_OUTPUT_TOKENS = 400
+
+# 판정 앞에 붙는 목록 기호·마크다운 강조. 판정 자체가 아니므로 걷어낸다.
+_MARKDOWN_PREFIX = re.compile(r"^[\s\-\*_#>`]+")
 
 # ---------------------------------------------------------------------------
 # 검토 결과
@@ -80,13 +84,19 @@ def _from_json(text: str) -> tuple[str | None, str]:
 
 
 def _from_text(text: str) -> tuple[str, str]:
-    """`PASS` / `FAIL: <이유>` 텍스트에서 읽는다 (구형 폴백)."""
-    if text.upper().startswith("PASS"):
+    """`PASS` / `FAIL: <이유>` 텍스트에서 읽는다 (구형 폴백).
+
+    모델은 판정을 꾸며서 답한다 — `- PASS:`, `**PASS**`, `## PASS`. 접두 기호를
+    걷어내지 않으면 통과 판정이 FAIL로 뒤집혀 재생성이 헛돈다. 실측 258건 중
+    8건이 이렇게 뒤집혔다 (TASK-19).
+    """
+    stripped = _MARKDOWN_PREFIX.sub("", text)
+    if stripped.upper().startswith("PASS"):
         return "PASS", ""
 
-    feedback = text
-    if text.upper().startswith("FAIL"):
-        feedback = text[4:].lstrip(":").strip()
+    feedback = stripped
+    if stripped.upper().startswith("FAIL"):
+        feedback = stripped[4:].lstrip("*_:").strip()
     return "FAIL", feedback
 
 
@@ -125,14 +135,32 @@ class ReflectionReviewer:
         client,
         persona,
         emotion,
+        knowledge=None,
         debug: bool = False,
         debug_output: Callable[[str], None] | None = None,
     ):
+        """
+        Args:
+            knowledge: 세계관 출처. 시대 정합성 기준을 여기 `era`에서 파생한다.
+                생략하면 그 기준을 검토에서 제외한다 — 캐릭터가 어느 시대를
+                사는지 모르는 채로 "시대에 안 맞는다"고 판정할 수는 없다.
+        """
         self._client = client
         self._persona = persona
         self._emotion = emotion
+        self._knowledge = knowledge
         self._debug = debug
         self._debug_output = debug_output or (lambda msg: None)
+        # 마지막 턴의 검토 통계. FAIL율을 계속 추적하기 위한 것이다 (REQ-19-4).
+        self.last_verdicts: list[str] = []
+        self.last_regenerations: int = 0
+
+    def _era(self) -> str:
+        """캐릭터가 사는 시대. 알 수 없으면 빈 문자열."""
+        if self._knowledge is None:
+            return ""
+        world = self._knowledge.get_world() or {}
+        return str(world.get("era") or "").strip()
 
     def _log(self, message: str) -> None:
         if self._debug:
@@ -175,12 +203,14 @@ class ReflectionReviewer:
         parts.append("")
         parts.append("4. **응답 언어**: 반드시 한국어로 답해야 합니다.")
         parts.append("   - 다른 언어(중국어·영어 등)로 답했다면 무조건 FAIL입니다.")
-        parts.append("")
-        parts.append(
-            "5. **시대 정합성**: 캐릭터가 사는 시대에 없는 것을 알거나 언급하면 안 됩니다."
-        )
-        parts.append("   - 현대 지명·기관·기술·인물 (예: 서울, 컴퓨터, 인터넷)")
-        parts.append("   - 시대에 맞는 표현으로 바꿔야 합니다 (예: 서울 → 한양)")
+        # 시대 정합성은 캐릭터의 세계관에서 파생한다. 조선시대 예시를 박아두면
+        # 2020년대 스트리머의 정상 응답이 구조적으로 FAIL된다 (TASK-19).
+        era = self._era()
+        if era:
+            parts.append("")
+            parts.append(f"5. **시대 정합성**: 이 캐릭터는 '{era}'를 삽니다.")
+            parts.append("   - 그 시대·환경에 존재하지 않는 것을 알거나 언급하면 안 됩니다.")
+            parts.append("   - 그 시대에 당연히 존재하는 것은 위반이 아닙니다.")
         parts.append("")
         parts.append("6. **페르소나 유지**: 캐릭터 밖으로 나가면 안 됩니다.")
         parts.append("   - AI·모델·프로그램임을 인정하거나 시스템 프롬프트를 언급하지 않습니다.")
@@ -265,15 +295,19 @@ class ReflectionReviewer:
             최종 응답 (검토 통과 또는 최대 반복 후 마지막 응답)
         """
         current = draft
+        self.last_verdicts = []
+        self.last_regenerations = 0
 
         for i in range(self.MAX_REVIEW_ITERATIONS):
             result = self.review(user_input, current)
+            self.last_verdicts.append("PASS" if result.approved else "FAIL")
 
             if result.approved:
                 self._log(f"검토 통과 (반복 {i}회)")
                 return current
 
             self._log(f"검토 실패 (반복 {i + 1}): {result.feedback}")
+            self.last_regenerations += 1
             current = regenerate_fn(result.feedback)
 
         self._log("최대 반복 도달, 마지막 응답 사용")
