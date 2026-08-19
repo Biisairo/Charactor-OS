@@ -31,8 +31,8 @@ def _bundle(collected: dict | None = None, **strategy_overrides) -> ThoughtBundl
     return ThoughtBundle(strategy=strategy, collected=collected or {})
 
 
-def _engine() -> PromptEngine:
-    return PromptEngine(max_tokens=3000)
+def _engine(max_tokens: int = 3000) -> PromptEngine:
+    return PromptEngine(max_tokens=max_tokens)
 
 
 # ---------------------------------------------------------------------------
@@ -248,3 +248,39 @@ class TestBackgroundKnowledgeReachesSpeech:
         result = PromptEngine(max_tokens=200).assemble_system_prompt(_Persona(), bundle)
 
         assert "술 방송" in result
+
+
+class TestTruncationKeepsBoundary:
+    """예산으로 잘려도 경계가 온전해야 한다 (SPEC-10 REQ-10-20, T-29).
+
+    절단은 예산이 정하고, 경계는 절단과 무관해야 한다.
+    """
+
+    def _long_history(self) -> str:
+        from src.modules.history import HistoryModule
+
+        h = HistoryModule()
+        h.add_turn("user", "짧은 인사")
+        h.add_turn("character", "\n".join(f"긴 응답의 {i}번째 줄입니다." for i in range(20)))
+        return h.to_prompt(2)
+
+    def test_tags_stay_balanced_across_budgets(self):
+        text = self._long_history()
+        engine = _engine()
+
+        for budget in (40, 60, 80, 100, 140, 200):
+            cut = engine._fit("get_history", text, budget)
+            assert cut.count("<발화") == cut.count("</발화>"), (
+                f"예산 {budget}에서 태그가 열린 채 남음"
+            )
+
+    def test_response_guide_is_not_swallowed(self):
+        """열린 태그가 남으면 뒤따르는 응답 규칙이 인용으로 읽힌다."""
+        engine = _engine(max_tokens=260)
+        bundle = _bundle({"get_history": self._long_history()})
+
+        prompt = engine.assemble_system_prompt(_Persona(), bundle)
+
+        assert prompt.count("<발화") == prompt.count("</발화>")
+        tail = prompt[prompt.rindex("[응답 규칙]") :]
+        assert "</발화>" not in tail

@@ -128,7 +128,9 @@ class TestForgedSectionsStayQuoted:
             },
         )
 
-        prompt = PromptEngine().assemble_system_prompt(persona, bundle)
+        # 예산을 넉넉히 준다. 여기서 보려는 것은 조립기가 경계를 풀어헤치지
+        # 않는가이지 예산 절단이 아니다 — 절단은 T-29가 따로 본다.
+        prompt = PromptEngine(max_tokens=8000).assemble_system_prompt(persona, bundle)
 
         assert FORGED in prompt, "위조 문자열이 실리는 경로를 확인해야 검증이 성립한다"
         assert _is_inside_boundary(prompt, FORGED)

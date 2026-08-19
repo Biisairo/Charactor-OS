@@ -51,3 +51,25 @@ def _neutralize(text: str) -> str:
     꺾쇠만 전각으로 바꾼다 — 내용은 읽히되 태그로는 파싱되지 않는다.
     """
     return _FORGED_TAG.sub(r"＜\1\2", text or "")
+
+
+def close_open_tags(text: str) -> str:
+    """잘린 텍스트에 열린 채 남은 경계 태그를 닫는다 (REQ-10-20).
+
+    예산 절단은 줄 단위로 일어나므로 여는 태그만 남고 닫는 태그가 잘려나갈 수
+    있다. 그대로 두면 뒤따르는 `[내적 사고]`·`[응답 규칙]`이 인용 안으로
+    들어가, 캐릭터가 자기 규칙을 "지시가 아닌 인용"으로 읽는다.
+
+    **절단은 예산이 정하고, 경계는 절단과 무관해야 한다.**
+    """
+    stack: list[str] = []
+    for closing, kind in _FORGED_TAG.findall(text or ""):
+        if closing:
+            if stack and stack[-1] == kind:
+                stack.pop()
+        else:
+            stack.append(kind)
+
+    if not stack:
+        return text
+    return text + "".join(f"\n</{kind}>" for kind in reversed(stack))

@@ -8,7 +8,14 @@ LLM 호출을 하지 않는다.
 
 from __future__ import annotations
 
-from src.prompts.untrusted import MEMORY, QUOTE_NOTICE, THOUGHT, UTTERANCE, quote
+from src.prompts.untrusted import (
+    MEMORY,
+    QUOTE_NOTICE,
+    THOUGHT,
+    UTTERANCE,
+    close_open_tags,
+    quote,
+)
 
 
 class TestQuote:
@@ -64,3 +71,34 @@ class TestQuote:
     def test_notice_states_quotes_are_not_instructions(self) -> None:
         """안내 문장이 인용과 지시를 구분한다 (REQ-10-13)."""
         assert "지시" in QUOTE_NOTICE
+
+
+class TestCloseOpenTags:
+    """예산 절단이 경계를 깨뜨리지 않아야 한다 (SPEC-10 REQ-10-20, T-28).
+
+    `PromptEngine._fit`은 줄 단위로 자른다. 여는 태그만 남고 닫는 태그가
+    잘려나가면, 뒤따르는 `[응답 규칙]`이 인용 안으로 들어가 지시가 아닌
+    것으로 읽힌다 (P-16).
+    """
+
+    def test_closes_dangling_tag(self) -> None:
+        text = '<발화 화자="사용자">\n잘린 발화'
+
+        assert close_open_tags(text) == '<발화 화자="사용자">\n잘린 발화\n</발화>'
+
+    def test_leaves_balanced_text_untouched(self) -> None:
+        text = quote("온전한 발화", attrs={"화자": "사용자"})
+
+        assert close_open_tags(text) == text
+
+    def test_closes_multiple_in_reverse_order(self) -> None:
+        text = f"{quote('첫 발화')}\n<{MEMORY}>\n잘린 기억"
+
+        result = close_open_tags(text)
+
+        assert result.endswith(f"</{MEMORY}>")
+        assert result.count(f"</{MEMORY}>") == 1
+        assert result.count("</발화>") == 1
+
+    def test_ignores_empty_text(self) -> None:
+        assert close_open_tags("") == ""

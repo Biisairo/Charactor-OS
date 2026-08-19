@@ -10,6 +10,7 @@
 from __future__ import annotations
 
 from src.agent.schemas import ResponseStrategy, ThoughtBundle
+from src.prompts.untrusted import close_open_tags
 
 MAX_PROMPT_TOKENS = 3000
 
@@ -91,7 +92,12 @@ class PromptEngine:
         return "\n\n".join(sections)
 
     def _fit(self, tool_name: str, text: str, budget: int) -> str:
-        """예산 안으로 줄인다. 잘랐다면 어느 섹션이었는지 남긴다 (REQ-RA-32)."""
+        """예산 안으로 줄인다. 잘랐다면 어느 섹션이었는지 남긴다 (REQ-RA-32).
+
+        줄 단위로 자르므로 인용의 닫는 태그가 잘려나갈 수 있다. 그대로 두면
+        뒤따르는 `[응답 규칙]`까지 인용 안으로 들어간다 — 절단은 예산이 정하고
+        경계는 절단과 무관해야 한다 (SPEC-10 REQ-10-20).
+        """
         if self._estimate_tokens(text) <= budget:
             return text
 
@@ -106,7 +112,7 @@ class PromptEngine:
             kept.append(line)
             used += line_tokens
 
-        return "\n".join(kept)
+        return close_open_tags("\n".join(kept))
 
     @staticmethod
     def _build_thought(strategy: ResponseStrategy) -> str:
