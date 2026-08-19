@@ -478,7 +478,10 @@ class CharacterOS:
                     user_input,
                     response,
                     EmotionAnalyzer(
-                        self._meter.wrap(self.client, "emotion"), on_prompt=self._log_prompt
+                        self._meter.wrap(self.client, "emotion"),
+                        # 누구의 감정인지 알아야 무엇이 사건인지 가른다 (SPEC-10 REQ-10-3).
+                        persona_context=self.persona.get_emotion_context(),
+                        on_prompt=self._log_prompt,
                     ),
                     history_context=history_context,
                 )

@@ -13,6 +13,8 @@ import json
 from collections.abc import Callable
 from dataclasses import dataclass, field
 
+from src.prompts.untrusted import quote
+
 
 @dataclass(frozen=True)
 class EmotionAnalysis:
@@ -55,8 +57,19 @@ _ANALYSIS_SCHEMA = {
 class EmotionAnalyzer:
     """대화와 현재 감정 상태를 주고 변화를 제안받는다."""
 
-    def __init__(self, client, on_prompt: Callable[[str, str], None] | None = None):
+    def __init__(
+        self,
+        client,
+        persona_context: str = "",
+        on_prompt: Callable[[str, str], None] | None = None,
+    ):
+        """
+        Args:
+            persona_context: 판정에 필요한 캐릭터 정보 (`PersonaModule.get_emotion_context`).
+                비우면 해당 섹션 없이 프롬프트를 만든다.
+        """
         self._client = client
+        self._persona_context = persona_context
         self._on_prompt = on_prompt
 
     def analyze(
@@ -71,13 +84,15 @@ class EmotionAnalyzer:
         current_emotions_str = (
             json.dumps(current_emotions, ensure_ascii=False) if current_emotions else "{}"
         )
+        persona_block = f"{self._persona_context}\n\n" if self._persona_context else ""
 
-        prompt = f"""캐릭터의 감정 상태를 업데이트하세요. 변화가 미미하면 현재 상태를 유지합니다.
+        prompt = f"""캐릭터의 감정 상태를 업데이트하세요.
 
-{history_context}
+{persona_block}{history_context}
 
-사용자: {user_input}
-캐릭터: {character_response}
+이번 대화입니다.
+{quote(user_input, attrs={"화자": "사용자"})}
+{quote(character_response, attrs={"화자": "캐릭터"})}
 
 현재 감정 상태:
 {current_emotions_str}
@@ -92,16 +107,23 @@ class EmotionAnalyzer:
     "significant": true/false
 }}
 
-규칙:
+판정 규칙:
 - 감정이 없는 상태(빈 {{}})가 기본값입니다. 중립=정상 상태입니다
 - significant가 true일 때만 emotions/remove를 채우세요
-- 일상적 대화(안부, 짧은 대답, 정보 교환)는 significant=false로 반환하세요
-- 감정 변화가 명확할 때만 significant=true: 감동, 분노, 슬픔, 큰 기쁨, 충격 등
+- 안부·짧은 대답·정보 교환처럼 **사건이 없는 대화**는 significant=false입니다
+
+다음은 사건입니다. significant=true로 판정하세요:
+- 모욕·욕설·인신공격, 존재나 하는 일을 부정당하는 말
+- 이 캐릭터가 싫어한다고 적힌 것을 정면으로 건드리는 말
+- 이 캐릭터의 가치관이나 스스로 정한 경계를 침범하는 요구
+- 관계의 급변 — 강한 호의·감사·칭찬, 비난·절교·거절
+- 상실·고통·두려움의 고백
+
+작성 규칙:
 - 감정 이름은 자유롭게 정하세요 (예: 행복, 슬픔, 분노, 설렘, 피로, 향수 등)
 - 값은 0.0에서 1.0 사이
-- 현재 감정 중 이 대화로 인해 완전히 사라진 것만 remove에 포함하세요
-- 애매하면 유지하세요. 감정은 쉽게 변하지 않습니다
-- 대부분의 대화에서 significant=false여야 합니다"""
+- 캐릭터가 겉으로 담담하게 답했더라도, 속으로 받은 것은 감정에 반영하세요
+- 현재 감정 중 이 대화로 인해 완전히 사라진 것만 remove에 포함하세요"""
 
         if self._on_prompt:
             self._on_prompt("emotion", prompt)

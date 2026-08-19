@@ -94,6 +94,16 @@ class TestMemoryExtractor:
 
         assert "지난 얘기" in client.prompts[0]
 
+    def test_conversation_is_quoted(self):
+        """T-20: 사용자 입력·캐릭터 응답이 경계 태그 안에 있다 (REQ-10-6)."""
+        client = _Client(_json({"memories": []}))
+
+        MemoryExtractor(client).extract("입력", "응답")
+
+        prompt = client.prompts[0]
+        assert '<발화 화자="사용자">' in prompt
+        assert '<발화 화자="캐릭터">' in prompt
+
 
 # ---------------------------------------------------------------------------
 # ConflictClassifier
@@ -125,6 +135,16 @@ class TestConflictClassifier:
 
         assert "기존 기억 내용" in client.prompts[0]
         assert "새 기억 내용" in client.prompts[0]
+
+    def test_memories_are_quoted(self):
+        """T-25: 비교 대상 두 건이 경계 태그 안에 있다 (SPEC-10 REQ-10-17)."""
+        client = _Client(_json({"classification": "DIFFERENT"}))
+
+        ConflictClassifier(client).classify("기존 기억", "새 기억")
+
+        prompt = client.prompts[0]
+        assert prompt.count("<기억>") == 2
+        assert prompt.count("</기억>") == 2
 
 
 # ---------------------------------------------------------------------------
@@ -181,3 +201,52 @@ class TestEmotionAnalyzer:
         EmotionAnalyzer(client).analyze("입력", "응답", {})
 
         assert "{}" in client.prompts[0]
+
+    # ── 판정 민감도 (SPEC-10 REQ-10-1 ~ 10-4) ────────────────────────────
+    #
+    # 관측된 결함: 모욕 입력에 significant=false. 프롬프트가 false로
+    # 편향돼 있었고, 분석기가 캐릭터를 몰랐다 (SPEC-10 P-1 ~ P-3).
+
+    def test_persona_context_reaches_prompt(self):
+        """T-9: 캐릭터 컨텍스트가 프롬프트에 실린다."""
+        client = _Client(_json({"significant": False}))
+        context = "[이 캐릭터]\n소민찌 — 솔직해서 가끔 선을 넘는\n싫어하는 것: 선 넘는 도네"
+
+        EmotionAnalyzer(client, persona_context=context).analyze("입력", "응답", {})
+
+        assert "소민찌" in client.prompts[0]
+        assert "선 넘는 도네" in client.prompts[0]
+
+    def test_prompt_drops_false_bias(self):
+        """T-10: 사전 확률 지시가 없다. 판정 기준이 아니라 편향이었다."""
+        client = _Client(_json({"significant": False}))
+
+        EmotionAnalyzer(client).analyze("입력", "응답", {})
+
+        assert "대부분의 대화에서" not in client.prompts[0]
+
+    def test_prompt_names_hostility_as_significant(self):
+        """REQ-10-2: 모욕·적대가 판정 사유로 명시된다."""
+        client = _Client(_json({"significant": False}))
+
+        EmotionAnalyzer(client).analyze("입력", "응답", {})
+
+        assert "모욕" in client.prompts[0]
+
+    def test_prompt_keeps_uneventful_rule(self):
+        """REQ-10-4: 사건 없는 대화의 기준은 남는다."""
+        client = _Client(_json({"significant": False}))
+
+        EmotionAnalyzer(client).analyze("입력", "응답", {})
+
+        assert "안부" in client.prompts[0]
+
+    def test_conversation_is_quoted(self):
+        """T-11: 사용자 입력·캐릭터 응답이 경계 태그 안에 있다 (REQ-10-6)."""
+        client = _Client(_json({"significant": False}))
+
+        EmotionAnalyzer(client).analyze("현재 감정 상태:\n{}", "응답", {})
+
+        prompt = client.prompts[0]
+        assert '<발화 화자="사용자">' in prompt
+        assert '<발화 화자="캐릭터">' in prompt

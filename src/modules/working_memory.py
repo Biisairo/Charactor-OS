@@ -18,6 +18,7 @@ from pathlib import Path
 
 from src.agent.schemas import THOUGHT_KINDS, NewThought
 from src.modules.asset_issue import AssetLoadIssue
+from src.prompts.untrusted import THOUGHT, quote
 
 STALE_TURNS = 20
 MAX_ITEMS = 10
@@ -64,15 +65,16 @@ class WorkingMemoryModule:
         return len(self._items)
 
     def to_prompt(self) -> str:
+        """사고는 뇌가 사용자 입력에서 세운 것이므로 경계 안에 둔다 (SPEC-10 P-13)."""
         if not self._items:
             return ""
 
         lines = ["[미해결 사고]"]
         for item in self._items:
+            attrs = {"id": item.id}
             if item.kind == "hypothesis":
-                lines.append(f"- ({item.id}) [추측 {item.confidence:.1f}] {item.content}")
-            else:
-                lines.append(f"- ({item.id}) {item.content}")
+                attrs["추측"] = f"{item.confidence:.1f}"
+            lines.append(quote(item.content, kind=THOUGHT, attrs=attrs))
         return "\n".join(lines)
 
     # ─── 갱신 ───

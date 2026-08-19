@@ -3,6 +3,8 @@ import time
 from dataclasses import asdict, dataclass
 from pathlib import Path
 
+from src.prompts.untrusted import QUOTE_NOTICE, quote
+
 
 @dataclass
 class ConversationTurn:
@@ -36,15 +38,19 @@ class HistoryModule:
         return self._turns[-n:]
 
     def to_prompt(self, n: int = 10) -> str:
-        """최근 n개 대화를 프롬프트 문자열로 변환한다."""
+        """최근 n개 대화를 프롬프트 문자열로 변환한다.
+
+        기록은 사용자가 내용을 통제할 수 있는 텍스트다. 평문으로 실으면
+        `[행동 지침]` 같은 섹션과 상대 발화를 위조당한다 (SPEC-10 P-6).
+        """
         recent = self.get_recent(n)
         if not recent:
             return "[최근 대화]\n대화 없음"
 
-        lines = ["[최근 대화]"]
+        lines = ["[최근 대화]", QUOTE_NOTICE]
         for turn in recent:
             label = "사용자" if turn.role == "user" else "캐릭터"
-            lines.append(f"{label}: {turn.content}")
+            lines.append(quote(turn.content, attrs={"화자": label}))
         return "\n".join(lines)
 
     def save(self) -> None:

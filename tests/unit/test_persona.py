@@ -281,3 +281,37 @@ class TestRelationshipsAreAlwaysKnown:
 
         assert "사용자" in targets
         assert any(str(t) in prompt for t in targets)
+
+
+# ---------------------------------------------------------------------------
+# get_emotion_context() — 감정 판정에 필요한 캐릭터 정보 (SPEC-10 REQ-10-3 · 10-5)
+#
+# 같은 발화라도 누구에게 하느냐에 따라 감정 사건인지가 갈린다. 분석기가
+# 캐릭터를 모르면 dislikes를 정면으로 건드리는 말도 일상 대화로 읽는다.
+# ---------------------------------------------------------------------------
+
+
+class TestEmotionContext:
+    def test_includes_identity_and_sensitivities(self, persona_path: str) -> None:
+        """T-7: 이름·성격·가치관·싫어하는 것·두려워하는 것이 담긴다."""
+        persona = PersonaModule(persona_path)
+        data = persona.load()
+
+        context = persona.get_emotion_context()
+
+        assert data["name"] in context
+        for key in ("values", "likes", "dislikes", "fears"):
+            for item in data.get(key, []) if key != "likes" else []:
+                assert item in context
+
+    def test_omits_absent_fields(self, tmp_path) -> None:
+        """T-8: 없는 필드는 줄째로 생략된다."""
+        path = tmp_path / "minimal.yaml"
+        path.write_text(yaml.dump({"name": "무명"}, allow_unicode=True), encoding="utf-8")
+
+        context = PersonaModule(str(path)).get_emotion_context()
+
+        assert "무명" in context
+        assert "싫어하는 것" not in context
+        assert "두려워하는 것" not in context
+        assert "중요하게 여기는 것" not in context

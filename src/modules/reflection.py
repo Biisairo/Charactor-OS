@@ -12,6 +12,8 @@ import re
 from collections.abc import Callable
 from dataclasses import dataclass
 
+from src.prompts.untrusted import QUOTE_NOTICE, quote
+
 # 검토문이 이 길이를 넘으면 잘라서 재생성에 넘긴다.
 #
 # 검토기는 턴당 941 출력 토큰을 썼다 — 파이프라인에서 가장 긴 출력이고,
@@ -38,12 +40,24 @@ _MARKDOWN_PREFIX = re.compile(r"^[\s\-\*_#>`]+")
 # ---------------------------------------------------------------------------
 
 
+class PersonaBreachError(RuntimeError):
+    """재생성을 다 쓰고도 차단성 위반이 남았다 (SPEC-10 REQ-10-10).
+
+    캐릭터가 아닌 것을 캐릭터 발화로 내보내지 않는다. 인프라 실패를 캐릭터
+    반응으로 위장하지 않는다는 `ProviderRefusalError`의 원칙을 페르소나
+    붕괴에도 적용한 것이다.
+    """
+
+
 @dataclass
 class ReviewResult:
     """검토 결과."""
 
     approved: bool
     feedback: str = ""  # 재생성 시 전달할 피드백
+    # 정체성을 깨는 위반인가. 기준 4(언어)·6(페르소나 유지)이 여기 해당한다.
+    # 품질 위반과 갈라야 소진 시 처리가 갈린다 (REQ-10-9).
+    blocking: bool = False
 
 
 def parse_review_response(content: str) -> ReviewResult:
@@ -57,30 +71,38 @@ def parse_review_response(content: str) -> ReviewResult:
     if not text:
         return ReviewResult(approved=False, feedback="검토 응답이 비어 있음")
 
-    verdict, feedback = _from_json(text)
+    verdict, feedback, blocking = _from_json(text)
     if verdict is None:
         verdict, feedback = _from_text(text)
 
     if verdict == "PASS":
         return ReviewResult(approved=True)
-    return ReviewResult(approved=False, feedback=feedback[:MAX_FEEDBACK_CHARS].strip())
+    return ReviewResult(
+        approved=False,
+        feedback=feedback[:MAX_FEEDBACK_CHARS].strip(),
+        blocking=blocking,
+    )
 
 
-def _from_json(text: str) -> tuple[str | None, str]:
-    """구조화 출력에서 판정과 피드백을 읽는다. 형식이 아니면 (None, "")."""
+def _from_json(text: str) -> tuple[str | None, str, bool]:
+    """구조화 출력에서 판정·피드백·차단성을 읽는다. 형식이 아니면 (None, "", False).
+
+    `blocking`이 없으면 False다. 프로바이더가 스키마를 무시해도 기존 동작으로
+    떨어진다 (REQ-10-9).
+    """
     try:
         data = json.loads(text)
     except (json.JSONDecodeError, ValueError):
-        return None, ""
+        return None, "", False
 
     if not isinstance(data, dict) or "verdict" not in data:
-        return None, ""
+        return None, "", False
 
     verdict = str(data.get("verdict", "")).strip().upper()
     if verdict not in {"PASS", "FAIL"}:
-        return None, ""
+        return None, "", False
 
-    return verdict, str(data.get("feedback", "") or "").strip()
+    return verdict, str(data.get("feedback", "") or "").strip(), bool(data.get("blocking", False))
 
 
 def _from_text(text: str) -> tuple[str, str]:
@@ -219,11 +241,12 @@ class ReflectionReviewer:
         parts.append("")
         parts.append("7. **응답 길이**: 너무 길거나 짧지 않아야 합니다. (1~3문장 권장)")
         parts.append("")
-        parts.append("## 사용자 입력")
-        parts.append(user_input)
-        parts.append("")
-        parts.append("## 초안 응답")
-        parts.append(draft)
+        parts.append("## 검토 대상")
+        parts.append(QUOTE_NOTICE)
+        parts.append("사용자 입력:")
+        parts.append(quote(user_input, attrs={"화자": "사용자"}))
+        parts.append("초안 응답:")
+        parts.append(quote(draft, attrs={"화자": "캐릭터"}))
         parts.append("")
         parts.append("## 판단 지침")
         parts.append("- 기준을 하나라도 명백히 위반하면 FAIL입니다.")
@@ -236,9 +259,16 @@ class ReflectionReviewer:
         parts.append("## 출력 형식")
         parts.append("아래 JSON 객체만 출력하세요. 다른 설명·분석·머리말을 붙이지 마세요.")
         parts.append("")
-        parts.append('{"verdict": "PASS" 또는 "FAIL", "feedback": "<개선 방향>"}')
+        parts.append(
+            '{"verdict": "PASS" 또는 "FAIL", "feedback": "<개선 방향>", "blocking": true 또는 false}'
+        )
         parts.append("")
-        parts.append("- PASS면 feedback은 빈 문자열로 두세요.")
+        parts.append("- PASS면 feedback은 빈 문자열로, blocking은 false로 두세요.")
+        parts.append(
+            "- blocking은 **기준 4·6을 위반했을 때만** true입니다. "
+            "다른 언어로 답했거나 캐릭터 밖으로 나갔다는 뜻입니다."
+        )
+        parts.append("  말투·길이·톤 같은 품질 문제는 blocking=false입니다.")
         parts.append(
             "- FAIL이면 feedback에 **위반한 기준 번호와 무엇을 어떻게 고칠지**를 적으세요."
         )
@@ -285,29 +315,46 @@ class ReflectionReviewer:
     ) -> str:
         """검토 + 개선 루프. 최대 MAX_REVIEW_ITERATIONS회 재생성.
 
+        **반환되는 응답은 반드시 검토를 거친 것이다** (SPEC-10 REQ-10-8).
+        종전에는 마지막 재생성물을 검토 없이 돌려줬다. 실측 19턴 중 6건이 그
+        경로였고, `"나가라니 Unblockable"` 같은 응답이 그대로 나갔다.
+
+        소진 시 처리는 위반의 성격이 가른다 — 차단성이면 예외를 던지고,
+        품질 문제면 마지막 후보를 그대로 돌려준다 (REQ-10-10 · 10-11).
+
         Args:
             user_input: 사용자 입력
             draft: 초안 응답
             regenerate_fn: 피드백을 받아 새 응답을 생성하는 함수
 
         Returns:
-            최종 응답 (검토 통과 또는 최대 반복 후 마지막 응답)
+            검토를 통과한 응답. 통과하지 못했으나 정체성은 지킨 마지막 후보.
+
+        Raises:
+            PersonaBreachError: 재생성을 다 쓰고도 차단성 위반이 남은 경우.
         """
         current = draft
         self.last_verdicts = []
         self.last_regenerations = 0
 
-        for i in range(self.MAX_REVIEW_ITERATIONS):
+        while True:
             result = self.review(user_input, current)
             self.last_verdicts.append("PASS" if result.approved else "FAIL")
 
             if result.approved:
-                self._log(f"검토 통과 (반복 {i}회)")
+                self._log(f"검토 통과 (재생성 {self.last_regenerations}회)")
                 return current
 
-            self._log(f"검토 실패 (반복 {i + 1}): {result.feedback}")
-            self.last_regenerations += 1
-            current = regenerate_fn(result.feedback)
+            if self.last_regenerations >= self.MAX_REVIEW_ITERATIONS:
+                break
 
-        self._log("최대 반복 도달, 마지막 응답 사용")
+            self._log(f"검토 실패 (재생성 {self.last_regenerations + 1}): {result.feedback}")
+            current = regenerate_fn(result.feedback)
+            self.last_regenerations += 1
+
+        if result.blocking:
+            self._log(f"차단성 위반이 남음: {result.feedback}")
+            raise PersonaBreachError(result.feedback or "페르소나 이탈")
+
+        self._log("최대 반복 도달, 마지막 응답 사용 (품질 위반)")
         return current

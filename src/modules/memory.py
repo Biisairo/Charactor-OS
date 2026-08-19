@@ -8,6 +8,8 @@ from pathlib import Path
 
 import numpy as np
 
+from src.prompts.untrusted import MEMORY, QUOTE_NOTICE, quote
+
 
 # ANSI 색상 코드
 class Colors:
@@ -215,6 +217,10 @@ class MemoryModule:
     def to_prompt(self, query: str, top_k: int = 5, token_budget: int = 0) -> str:
         """검색된 기억을 프롬프트 문자열로 변환한다.
 
+        기억은 사용자 발화에서 추출되므로 사용자 유래다. 게다가 히스토리와
+        달리 무기한 남아, 검색될 때마다 시스템 프롬프트로 돌아온다 —
+        심어진 지시문의 노출이 가장 긴 경로다 (SPEC-10 P-12).
+
         Args:
             query: 검색 쿼리
             top_k: 최대 결과 수
@@ -224,11 +230,11 @@ class MemoryModule:
         if not results:
             return "[관련 기억]\n관련 기억 없음"
 
-        lines = ["[관련 기억]"]
-        used_tokens = self._estimate_tokens(lines[0])
+        lines = ["[관련 기억]", QUOTE_NOTICE]
+        used_tokens = sum(self._estimate_tokens(line) for line in lines)
 
         for r in results:
-            line = f"- {r['content']} (가중치: {r['weight']:.1f})"
+            line = quote(r["content"], kind=MEMORY, attrs={"가중치": f"{r['weight']:.1f}"})
             line_tokens = self._estimate_tokens(line)
             if token_budget > 0 and used_tokens + line_tokens > token_budget:
                 break

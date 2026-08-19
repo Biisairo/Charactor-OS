@@ -14,6 +14,8 @@ from collections.abc import Callable
 from dataclasses import dataclass
 from typing import Literal
 
+from src.prompts.untrusted import MEMORY, quote
+
 Classification = Literal["IDENTICAL", "SIMILAR", "DIFFERENT"]
 
 DEFAULT_IMPORTANCE = 0.5
@@ -93,8 +95,9 @@ class MemoryExtractor:
 
 {history_context}
 
-사용자: {user_input}
-캐릭터: {character_response}
+이번 대화입니다.
+{quote(user_input, attrs={"화자": "사용자"})}
+{quote(character_response, attrs={"화자": "캐릭터"})}
 
 다음 JSON 형식으로 반환하세요:
 {{
@@ -154,8 +157,10 @@ class ConflictClassifier:
 
         prompt = f"""다음 두 기억을 비교하세요.
 
-기존 기억: {existing_content}
-새 기억: {content}
+기존 기억:
+{quote(existing_content, kind=MEMORY)}
+새 기억:
+{quote(content, kind=MEMORY)}
 
 다음 중 하나로 분류하세요:
 - IDENTICAL: 같은 정보

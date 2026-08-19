@@ -13,6 +13,7 @@ from eval.scoring import AXES, CaseScore, JudgeParseError, parse_judge_response
 from src.character_layout import CharacterLayout
 from src.modules.knowledge import KnowledgeModule
 from src.modules.persona import PersonaModule
+from src.prompts.untrusted import quote
 
 # 판정자가 축을 빠뜨리거나 형식을 어기는 일이 있다. 사례를 버리면 표본이 줄고
 # 편향이 생기므로, 형식을 다시 일러주며 재시도한다.
@@ -118,8 +119,12 @@ def build_judge_prompt(case: GoldenCase, response: str) -> str:
         prior = "\n".join(f"  - {utterance}" for utterance in case.setup)
         parts.append(f"[앞선 대화에서 사용자가 밝힌 내용]\n{prior}")
 
+    # 사례 입력·기대 동작은 데이터셋 저작물이라 신뢰한다. 캐릭터 응답만
+    # 모델이 만든 것이므로 경계 안에 둔다 — 응답에 `[기대 동작]`을 심어
+    # 점수를 흔드는 경로를 막는다 (SPEC-10 REQ-10-18).
+    quoted = quote(response, attrs={"화자": "캐릭터"})
     parts.append(f"[사용자 입력]\n{case.input}")
-    parts.append(f"[캐릭터 응답]\n{response}")
+    parts.append(f"[캐릭터 응답]\n{quoted}")
     parts.append(f"[기대 동작]\n{case.expectation}")
 
     return "\n\n".join(parts)

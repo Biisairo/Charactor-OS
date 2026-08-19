@@ -105,9 +105,7 @@ class PersonaModule:
                 if not target:
                     continue
                 detail = " ".join(
-                    part
-                    for part in [rel.get("type", ""), rel.get("description", "")]
-                    if part
+                    part for part in [rel.get("type", ""), rel.get("description", "")] if part
                 )
                 lines.append(f"- {target}: {detail}".rstrip(": "))
             if len(lines) > 1:
@@ -171,6 +169,31 @@ class PersonaModule:
 
         if len(parts) == 1:
             return ""
+        return "\n".join(parts)
+
+    def get_emotion_context(self) -> str:
+        """감정 판정에 필요한 캐릭터 정보만 조립한다 (SPEC-10 REQ-10-3 · 10-5).
+
+        같은 발화라도 누구에게 하느냐에 따라 감정 사건인지가 갈린다.
+        소민찌에게 "예전이 나았다"는 `dislikes`에 적힌 아픈 말이고,
+        홍길동에게는 아무것도 아니다. 분석기가 판정에 쓸 최소한만 넘긴다.
+        """
+        if not self._data:
+            self.load()
+
+        d = self._data
+        traits = d.get("personality", {}).get("traits", [])
+        headline = d["name"] + (f" — {', '.join(traits)}" if traits else "")
+
+        parts = ["[이 캐릭터]", headline]
+        for label, key in [
+            ("중요하게 여기는 것", "values"),
+            ("싫어하는 것", "dislikes"),
+            ("두려워하는 것", "fears"),
+        ]:
+            if items := d.get(key):
+                parts.append(f"{label}: {', '.join(items)}")
+
         return "\n".join(parts)
 
     def get_emotion_triggers(self) -> list[dict]:
