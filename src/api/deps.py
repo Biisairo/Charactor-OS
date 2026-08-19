@@ -10,9 +10,6 @@
 from __future__ import annotations
 
 from collections.abc import Callable
-from pathlib import Path
-
-import yaml
 
 from src.api.worker import CharacterWorker
 from src.character_os import CharacterOS
@@ -26,14 +23,6 @@ DEFAULT_CONFIG = {
     "local_model": "mlx-community/Qwen3.5-4B-MLX-4bit",
     "adapter_path": None,
 }
-
-
-def load_config(path: str) -> dict:
-    config_file = Path(path)
-    if config_file.exists():
-        with open(config_file, encoding="utf-8") as f:
-            return yaml.safe_load(f) or {}
-    return {}
 
 
 # lifespan에서 초기화된다. 그 전에 접근하면 명시적으로 실패한다 —

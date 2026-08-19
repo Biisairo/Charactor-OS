@@ -1,13 +1,13 @@
 import argparse
-from pathlib import Path
 
-import yaml
 from prompt_toolkit import PromptSession
 from prompt_toolkit.auto_suggest import AutoSuggestFromHistory
 from prompt_toolkit.history import FileHistory
 
 from src.call_log import from_config as call_logger_from_config
 from src.character_os import CharacterOS
+from src.config import load_config
+from src.prompts.engine import from_config as prompt_engine_from_config
 from src.trace import format_trace
 
 # 상태 경로는 기본값을 두지 않는다. 생략하면 `CharacterOS`가
@@ -18,14 +18,6 @@ DEFAULT_CONFIG = {
     "local_model": "mlx-community/Qwen3.5-4B-MLX-4bit",
     "adapter_path": None,
 }
-
-
-def load_config(path: str) -> dict:
-    config_file = Path(path)
-    if config_file.exists():
-        with open(config_file, encoding="utf-8") as f:
-            return yaml.safe_load(f) or {}
-    return {}
 
 
 def main():
@@ -71,6 +63,7 @@ def main():
         no_review=args.no_review,
         trace=args.trace,
         call_logger=call_logger_from_config(config),
+        prompt_engine=prompt_engine_from_config(config),
     )
 
     print("캐릭터가 준비되었습니다. 대화를 시작하세요!")

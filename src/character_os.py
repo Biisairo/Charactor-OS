@@ -101,6 +101,7 @@ class CharacterOS:
         trace: bool = False,
         client: object | None = None,
         call_logger: CallLogger | None = None,
+        prompt_engine: PromptEngine | None = None,
     ):
         """
         Args:
@@ -108,6 +109,9 @@ class CharacterOS:
                 테스트에서 실제 API 호출 없이 파이프라인을 검증하기 위한 진입점이다.
             call_logger: LLM 호출 운영 로거. 생략하면 기본 경로에 기록한다.
                 테스트에서는 비활성 로거를 주입해 파일 쓰기를 막는다.
+            prompt_engine: 프롬프트 조립기. 생략하면 기본 예산과 보정 휴리스틱을
+                쓴다. 설정에서 만들려면 `src.prompts.engine.from_config`
+                (SPEC-11 REQ-11-6).
             memory_db_path, emotion_save_path, history_save_path, working_memory_path:
                 생략하면 `character_dir/state/` 아래로 파생한다. 캐릭터마다
                 상태가 분리되는 것이 기본 동작이다 (TASK-17). 명시하면 그
@@ -166,7 +170,7 @@ class CharacterOS:
         self.history = HistoryModule(save_path=history_save_path)
         self.fewshot = FewShotModule(examples_dir, embedding_fn=self._embed)
         self.working_memory = WorkingMemoryModule(save_path=working_memory_path)
-        self.prompt_engine = PromptEngine(max_tokens=3000)
+        self.prompt_engine = prompt_engine or PromptEngine()
 
         # 정적 데이터 로드
         self._log("[모듈 로드] persona 로드 중...", module="orchestrator")
@@ -384,11 +388,23 @@ class CharacterOS:
         self._log("-" * 40, module="response")
 
         system_prompt = self.prompt_engine.assemble_system_prompt(self.persona, bundle)
-        if self.prompt_engine.last_truncated:
-            self._log(
-                f"예산 초과로 잘린 섹션: {', '.join(self.prompt_engine.last_truncated)}",
-                module="response",
+        report = self.prompt_engine.last_report
+        self._log(f"프롬프트 예산: {report.describe()}", module="response")
+        if report.starved:
+            # 조용한 절단이 이 과제의 출발점이었다. 검색 몫이 없다는 것은
+            # 뇌가 모아온 근거가 발화에 실리지 않는다는 뜻이므로 드러낸다.
+            self._output(
+                f"경고: 프롬프트 예산이 부족합니다 — 고정 섹션 {report.fixed_tokens} / "
+                f"예산 {report.max_tokens}. 검색 결과 {report.search_tokens} 토큰."
             )
+        if report.over_limit:
+            # 합계만 알리면 무엇을 줄일지 모른다. 범인을 짚는다 (REQ-11-16).
+            over = ", ".join(
+                f"{name} {report.sections.get(name, 0)}"
+                f"(상한 {int(report.max_tokens * self.prompt_engine.SECTION_LIMITS[name])})"
+                for name in report.over_limit
+            )
+            self._output(f"경고: 상한을 넘은 자산 섹션 — {over}")
 
         self._log("시스템 프롬프트:", module="response")
         self._log(system_prompt, module="response")
@@ -582,6 +598,20 @@ class CharacterOS:
                     "regenerations": self.reviewer.last_regenerations,
                 }
             )
+        # 예산 내역은 debug 플래그와 무관하게 남긴다 (SPEC-11 REQ-11-9).
+        # 종전에는 디버그 로그에만 남아, 평가 하네스가 검색 결과를 통째로 잃고도
+        # 그 사실을 보지 못했다 (P-4).
+        report = self.prompt_engine.last_report
+        extra["prompt_budget"] = {
+            "max_tokens": report.max_tokens,
+            "fixed_tokens": report.fixed_tokens,
+            "search_tokens": report.search_tokens,
+            "truncated": list(report.truncated),
+            "starved": report.starved,
+            "method": report.method,
+            "sections": dict(report.sections),
+            "over_limit": list(report.over_limit),
+        }
         self._call_logger.log_turn(
             turn_id=self._turn_id,
             character=self._character_dir.name,
@@ -662,7 +692,10 @@ class CharacterOS:
             "response",
             lambda: self._generate_response(user_input, bundle),
             failure_message="응답 생성 실패",
-            details=lambda r: {"response_len": len(r)},
+            details=lambda r: {
+                "response_len": len(r),
+                "prompt_budget": self.prompt_engine.last_report.describe(),
+            },
         )
         if turn.failed:
             return None

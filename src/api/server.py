@@ -28,12 +28,14 @@ from contextlib import asynccontextmanager
 from fastapi import FastAPI
 
 from src.api import deps
-from src.api.deps import DEFAULT_CONFIG, load_config
+from src.api.deps import DEFAULT_CONFIG
 from src.api.paths import SAFE_FILENAME, SAFE_SEGMENT, safe_child
 from src.api.routers import characters, chat, diagnostics, frontend, knowledge, state
 from src.api.worker import CharacterWorker
 from src.call_log import from_config as call_logger_from_config
 from src.character_os import CharacterOS
+from src.config import load_config
+from src.prompts.engine import from_config as prompt_engine_from_config
 
 __all__ = ["app", "lifespan", "CharacterWorker", "SAFE_FILENAME", "SAFE_SEGMENT", "safe_child"]
 
@@ -57,6 +59,7 @@ async def lifespan(app: FastAPI):
         debug=True,
         trace=True,
         call_logger=call_logger_from_config(config),
+        prompt_engine=prompt_engine_from_config(config),
     )
     deps.set_worker(CharacterWorker(cos))
     yield

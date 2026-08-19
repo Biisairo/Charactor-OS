@@ -53,16 +53,26 @@ class TestBudgetRatios:
 
 
 class TestEstimateTokens:
+    """계측은 `TokenCounter`가 맡는다. 엔진은 위임할 뿐이다 (SPEC-11 REQ-11-1)."""
+
     def test_returns_positive_int_for_nonempty(self):
-        result = PromptEngine._estimate_tokens("hello world")
+        result = _engine()._estimate_tokens("hello world")
         assert isinstance(result, int)
         assert result > 0
 
     def test_returns_zero_for_empty_string(self):
-        assert PromptEngine._estimate_tokens("") == 0
+        assert _engine()._estimate_tokens("") == 0
 
     def test_korean_text_estimates_higher_than_ascii(self):
-        assert PromptEngine._estimate_tokens("안녕하세요") > PromptEngine._estimate_tokens("hello")
+        """한글이 글자당 더 비싸다.
+
+        종전 계수(1.5 대 0.3)에서는 다섯 글자로도 갈렸지만, 실측 보정값
+        (0.766 대 0.634)에서는 차이가 작아 그 규모로는 같은 값이 나온다.
+        비율이 실제에 가까워진 결과이므로 성질만 유지한다 (SPEC-11 REQ-11-5).
+        """
+        engine = _engine()
+
+        assert engine._estimate_tokens("가" * 100) > engine._estimate_tokens("a" * 100)
 
 
 # ---------------------------------------------------------------------------
@@ -284,3 +294,150 @@ class TestTruncationKeepsBoundary:
         assert prompt.count("<발화") == prompt.count("</발화>")
         tail = prompt[prompt.rindex("[응답 규칙]") :]
         assert "</발화>" not in tail
+
+
+# ---------------------------------------------------------------------------
+# 7. 예산 계측과 보고 (SPEC-11)
+#
+# 계측이 틀려 검색 몫이 0이 됐고, 0이 된 사실이 어디에도 보이지 않았다.
+# ---------------------------------------------------------------------------
+
+
+class _Counter:
+    """글자 수를 그대로 토큰 수로 세는 계측기."""
+
+    method = "test"
+    fallback_reason = ""
+
+    def count(self, text: str) -> int:
+        return len(text or "")
+
+
+class _FatPersona(_Persona):
+    def to_system_prompt(self) -> str:
+        return "[페르소나]\n" + "가" * 4000
+
+
+class TestInjectedCounter:
+    def test_engine_uses_injected_counter(self):
+        """T-8: 엔진이 직접 글자를 세지 않는다 (REQ-11-1)."""
+        engine = PromptEngine(max_tokens=3000, counter=_Counter())
+
+        engine.assemble_system_prompt(_Persona(), _bundle())
+
+        assert engine.last_report.method == "test"
+
+    def test_report_carries_budget_breakdown(self):
+        """T-11."""
+        engine = PromptEngine(max_tokens=3000, counter=_Counter())
+
+        engine.assemble_system_prompt(_Persona(), _bundle({"search_memory": "- 기억"}))
+        report = engine.last_report
+
+        assert report.max_tokens == 3000
+        assert report.fixed_tokens > 0
+        assert report.search_tokens == 3000 - report.fixed_tokens
+
+
+class TestStarvedBudget:
+    def test_persona_is_never_truncated(self):
+        """T-9 · REQ-11-7: 정체성을 자료보다 먼저 버리지 않는다."""
+        engine = PromptEngine(max_tokens=500, counter=_Counter())
+
+        prompt = engine.assemble_system_prompt(_FatPersona(), _bundle())
+
+        assert "가" * 4000 in prompt
+
+    def test_starved_when_search_share_is_tiny(self):
+        """T-10 · REQ-11-8."""
+        engine = PromptEngine(max_tokens=500, counter=_Counter())
+
+        engine.assemble_system_prompt(_FatPersona(), _bundle({"search_memory": "- 기억"}))
+
+        assert engine.last_report.starved is True
+
+    def test_not_starved_with_room(self):
+        engine = PromptEngine(max_tokens=100_000, counter=_Counter())
+
+        engine.assemble_system_prompt(_Persona(), _bundle({"search_memory": "- 기억"}))
+
+        assert engine.last_report.starved is False
+
+
+class TestAccurateCountingRestoresSections:
+    def test_search_result_lands_when_counter_is_accurate(self):
+        """T-12: 이 과제의 본체.
+
+        같은 자산·같은 예산이라도, 과대 계상하는 계측기는 검색 결과를 버리고
+        정확한 계측기는 싣는다.
+        """
+        bundle = _bundle({"search_memory": "[관련 기억]\n- 사용자는 편의점 야간 알바를 한다"})
+
+        class _Inflating(_Counter):
+            def count(self, text: str) -> int:
+                return len(text or "") * 6
+
+        starved = PromptEngine(max_tokens=1200, counter=_Inflating())
+        accurate = PromptEngine(max_tokens=1200, counter=_Counter())
+
+        assert "편의점 야간 알바" not in starved.assemble_system_prompt(_Persona(), bundle)
+        assert "편의점 야간 알바" in accurate.assemble_system_prompt(_Persona(), bundle)
+
+
+# ---------------------------------------------------------------------------
+# 8. 고정 섹션 상한 (SPEC-11 v1.1 REQ-11-14 ~ 17)
+#
+# 상한을 두는 것과 자르는 것은 다르다. 넘으면 보고할 뿐 자르지 않는다.
+# 합계만 보면 범인을 모른다 — "고정 2,204"로는 무엇을 줄일지 알 수 없다.
+# ---------------------------------------------------------------------------
+
+
+class _BigSection(_Persona):
+    """행동지침만 비대한 페르소나."""
+
+    def get_behavior_section(self) -> str:
+        return "[행동 지침]\n" + "가" * 900
+
+
+class TestSectionLimits:
+    def test_report_breaks_down_by_section(self):
+        """T-16 · REQ-11-15."""
+        engine = PromptEngine(max_tokens=1000, counter=_Counter())
+
+        engine.assemble_system_prompt(_Persona(), _bundle())
+        sections = engine.last_report.sections
+
+        assert "persona" in sections
+        assert sections["persona"] > 0
+
+    def test_oversized_section_is_named(self):
+        """T-17 · REQ-11-16: 이름으로 짚어야 무엇을 줄일지 안다."""
+        engine = PromptEngine(max_tokens=1000, counter=_Counter())
+
+        engine.assemble_system_prompt(_BigSection(), _bundle())
+
+        assert engine.last_report.over_limit == ["behavior"]
+
+    def test_oversized_section_is_not_truncated(self):
+        """T-18 · REQ-11-14: 상한은 경보지 가위가 아니다."""
+        engine = PromptEngine(max_tokens=1000, counter=_Counter())
+
+        prompt = engine.assemble_system_prompt(_BigSection(), _bundle())
+
+        assert "가" * 900 in prompt
+
+    def test_within_limits_reports_nothing(self):
+        engine = PromptEngine(max_tokens=100_000, counter=_Counter())
+
+        engine.assemble_system_prompt(_Persona(), _bundle())
+
+        assert engine.last_report.over_limit == []
+
+    def test_limits_cover_authored_sections_only(self):
+        """응답규칙·내적사고는 저작자가 통제하지 않으므로 상한 대상이 아니다."""
+        assert set(PromptEngine.SECTION_LIMITS) == {
+            "persona",
+            "knowledge",
+            "behavior",
+            "inner_world",
+        }

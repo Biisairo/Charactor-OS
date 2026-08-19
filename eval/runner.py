@@ -12,6 +12,8 @@ from pathlib import Path
 from eval.dataset import GoldenCase, GoldenDataset
 from eval.scoring import CaseScore, Summary, aggregate
 from src.character_os import CharacterOS
+from src.config import load_config
+from src.prompts.engine import from_config as prompt_engine_from_config
 from src.validity import provider_error_reason
 
 RESULTS_DIR = Path(__file__).parent / "results"
@@ -171,6 +173,8 @@ def _generate_response(
         debug=False,
         output=lambda _msg: None,
         no_review=no_review,
+        # 평가만 다른 자로 재면 측정이 런타임과 어긋난다 (SPEC-11 REQ-11-11).
+        prompt_engine=prompt_engine_from_config(load_config()),
         **kwargs,
     )
 
