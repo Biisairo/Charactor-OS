@@ -169,6 +169,7 @@ class ReActBrain:
         sections = [
             self._persona.get_behavior_section(),
             self._persona.get_inner_world(),
+            baseline.get("knowledge", ""),
             baseline.get("emotion", ""),
             baseline.get("history", ""),
             self._tools.knowledge_index(),

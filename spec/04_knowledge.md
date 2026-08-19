@@ -1,218 +1,179 @@
 # Knowledge 모듈 스펙
 
+문서 버전: 3.0
+최종 갱신: 2026-08-19 (TASK-22 — 마크다운 단일 형식)
+
 ## 1. 목적
 
-캐릭터가 속한 **세계관, 관계, 타임라인, 장소** 등 구조화된 지식을 관리한다.
-Persona의 배경을 넘어서는 세계 전체의 맥락을 제공한다.
+캐릭터가 속한 세계의 맥락을 관리한다. Persona가 "이 사람이 누구인가"라면
+Knowledge는 "이 사람이 사는 세상이 어떻게 돌아가는가"다.
 
-## 2. Knowledge vs Persona 구분
+## 2. Knowledge vs Persona
 
-| 구분 | Persona | Knowledge |
+| | Persona | Knowledge |
 |---|---|---|
-| 범위 | 캐릭터 자체의 정체성 | 캐릭터가 속한 세계 전체 |
-| 예시 | "홍길동은 서자다" | "조선시대는 서자가 차별받는다" |
-| 관리 | 캐릭터 1개당 1 파일 | 세계 1개당 N 파일 |
-| 참조 | 시스템 프롬프트에 항상 포함 | 관련성에 따라 선택적 포함 |
+| 범위 | 캐릭터 자체의 정체성 | 캐릭터가 속한 세계 |
+| 예 | "홍길동은 서자다" | "조선에서 서자는 과거를 볼 수 없다" |
+| 파일 | 캐릭터당 1개 (`persona.yaml`) | 캐릭터당 N개 (마크다운) |
 
-## 3. Knowledge YAML 스키마
+---
 
-기존 단순 파일 로드도 계속 지원하되, `.yaml`/`.yml` 파일은 아래 스키마로 파싱하여 구조화한다.
-
-### 3.1 World (세계관)
-
-```yaml
-# knowledge/world.yaml
-type: world
-name: string                    # 세계 이름 (예: "조선시대 세계관")
-era: string                     # 시대/에포크 (예: "조선 중기")
-description: string             # 세계관 요약
-
-rules:                          # 세계의 규칙/법칙
-  - string                      # 예: "서자는 과거를 볼 수 없다"
-
-technology_level: string        # 기술 수준 (예: "전근대", "근대")
-social_structure: string        # 사회 구조 (예: "양반-상민-천민 신분제")
-```
-
-### 3.2 Character (타 캐릭터)
-
-```yaml
-# knowledge/characters/아버지.yaml
-type: character
-name: string                    # 캐릭터 이름
-identity: string                # 한 줄 소개
-personality: string             # 성격 요약
-relationship_to_player: string  # 주인공과의 관계
-status: string                  # 현재 상태 (예: "생존", "행방불명")
-first_appearance: string        # 첫 등장 시점
-description: string             # 상세 설명
-```
-
-### 3.3 Relationship (관계 그래프)
-
-```yaml
-# knowledge/relationships.yaml
-type: relationships
-relationships:
-  - from: string                # 출발 캐릭터 (예: "홍길동")
-    to: string                  # 대상 캐릭터 (예: "아버지")
-    type: string                # 관계 유형 (예: "부자", "연인", "적")
-    sentiment: string           # 감정 (예: "분노", "그리움", "무관심")
-    description: string         # 관계 설명
-    strength: float             # 관계 강도 (0.0~1.0)
-```
-
-### 3.4 Timeline (타임라인)
-
-```yaml
-# knowledge/timeline.yaml
-type: timeline
-events:
-  - time: string                # 시점 (예: "1592년", "어린 시절", "3일 전")
-    event: string               # 사건 설명
-    characters_involved: string[]  # 관련 캐릭터
-    impact: string              # 영향/결과
-```
-
-### 3.5 Location (장소)
-
-```yaml
-# knowledge/locations.yaml
-type: locations
-locations:
-  - name: string                # 장소 이름
-    description: string         # 장소 묘사
-    significance: string        # 스토리적 의미
-    characters_present: string[] # 이 장소에 있는 캐릭터
-```
-
-### 3.6 Freeform (자유 형식 — 기존 호환)
-
-```yaml
-# knowledge/freeform/notes.yaml 또는 .md/.json/.txt
-type: freeform                  # 또는 type 필드 생략
-content: |
-  임의의 텍스트...
-```
-
-## 4. 디렉토리 구조
+## 3. 두 종류의 지식
 
 ```
-knowledge/
-├── world.yaml                  # 세계관 (type: world)
-├── relationships.yaml          # 관계 그래프 (type: relationships)
-├── timeline.yaml               # 타임라인 (type: timeline)
-├── locations.yaml              # 장소 (type: locations)
-├── characters/                 # 타 캐릭터 (type: character)
-│   ├── father.yaml
-│   └── friend.yaml
-└── freeform/                   # 자유 형식 지식
-    ├── notes.md
-    └── facts.json
+characters/<id>/static/knowledge/
+    base/       배경지식 — 원문 그대로 프롬프트에 주입된다
+    general/    일반지식 — RAG로 색인되어 검색으로 꺼내 쓴다
+    *.md        루트 직속 파일은 general 취급 (하위 호환)
 ```
 
-## 5. KnowledgeModule 클래스
+| | base/ | general/ |
+|---|---|---|
+| 프롬프트 | 원문 그대로 항상 | 검색된 조각만 |
+| 크기 | 짧게 (`BASE_WARN_TOKENS` 초과 시 경고) | 제한 없음 |
+| 역할 | 캐릭터의 상식 + 일반지식 인덱스 | 참고 자료 |
+| 예 | 세계의 규칙, 늘 지키는 직업적 습관 | 연표, 장소, 관계, 업무 상세 |
 
-### 인터페이스
+### 배치는 사람이 정한다
+
+자동 분류하지 않는다. 어느 지식이 "항상 알아야 하는 것"인지는 캐릭터를 만든
+사람만 안다. 파일을 옮기는 것으로 성격이 바뀐다.
+
+### base/ 는 파일명 순으로 실린다
+
+주입 순서가 곧 읽는 순서다. 순서를 통제하려면 파일명에 번호를 붙인다.
+
+```
+base/01-world.md              세계가 어떻게 돌아가는가
+base/02-broadcast-rules.md    직업적으로 늘 지키는 것
+```
+
+### 배경지식이 인덱스가 된다
+
+`base/` 원문 뒤에 `general/`의 문서·소제목 목차가 **자동으로** 붙는다.
+사람이 목차를 손으로 관리하면 자료를 추가할 때마다 어긋나고, 어긋난 목차는
+캐릭터가 그 자료를 영영 찾지 못하게 만든다.
+
+---
+
+## 4. 파일 형식 — 마크다운 하나 (v3)
+
+지식 파일은 **마크다운만** 쓴다. `.md`가 아닌 파일은 읽지 않는다.
+
+### 왜 하나로 통일하는가
+
+v2까지는 구조화 YAML(`type: world|relationships|timeline|locations`)과 자유
+문서가 공존했다. 실제로 그 스키마가 지탱하던 기능을 전수 조사한 결과는 이렇다.
+
+| 구조화 API | 실사용 |
+|---|---|
+| `get_world().era` | Reflection의 시대 기준, eval 판정자 프로필 — **실사용** |
+| `get_relationships_for()` | 뇌의 `get_relationships` 도구 |
+| `get_timeline` · `get_locations` · `get_relationships` | API에만 노출, 호출하는 곳 없음 |
+| `get_characters` | 초기화 로그의 개수 세기뿐 |
+| `to_prompt()` (전체 지식) | 호출하는 곳 없음 |
+
+스키마 100여 줄이 지탱하던 실제 기능은 `era` 한 줄과 관계 조회 하나였다.
+그 값에 비해 저작 비용이 크다 — 자료를 추가할 때마다 "이건 어느 스키마인가"를
+판단해야 하고, 검색 단위가 청킹기 내부 규칙에 맡겨지며, YAML 문법이 그대로
+프롬프트에 실려 노이즈가 된다.
+
+마크다운 하나로 통일하면 **저작자가 `##` 로 검색 단위를 직접 통제**하고,
+쓴 문장이 그대로 프롬프트에 실린다.
+
+### front matter — 시스템이 읽는 최소 메타
+
+`era`는 실제로 쓰이므로 남긴다. 문서 앞머리에 YAML front matter로 적는다.
+
+```markdown
+---
+era: 2020년대 후반 대한민국 서울
+---
+
+# 이 바닥이 돌아가는 방식
+
+개인방송은 실시간으로 나가지만…
+```
+
+- front matter는 **본문이 아니다**. 프롬프트에도 검색 색인에도 들어가지 않는다.
+- 여러 파일에 있으면 파일명 순으로 먼저 발견된 값을 쓴다.
+- 없으면 `era`는 빈 값이고, Reflection은 시대 정합성 기준을 검사하지 않는다
+  (TASK-19 REQ-19-2).
+
+### 관계는 어디에 적는가
+
+- **사용자·주요 인물과의 관계** → `persona.yaml`의 `relationships`.
+  시스템 프롬프트에 항상 실린다.
+- **그 밖의 인물 관계** → `general/`의 마크다운. 검색으로 꺼내 쓴다.
+
+`get_relationships` 도구는 폐지했다. `search_knowledge`가 같은 일을 하며,
+도구가 하나 줄어 뇌의 루프도 줄어든다.
+
+---
+
+## 5. RAG 색인
+
+### 청킹
+
+1. 마크다운 제목(`#` ~ `######`)을 경계로 나눈다.
+2. 조각이 `MAX_CHUNK_CHARS`(600)를 넘으면 **문단 단위로 한 번 더** 나눈다.
+3. 각 조각은 상위 제목 경로를 머리에 달고 다닌다 — `방송 정보 > 시청자 호칭과 문화`.
+   맥락 없이 잘린 문단은 검색되어도 무슨 이야기인지 알 수 없다.
+
+저작자는 `##` 를 끊는 것으로 검색 단위를 직접 정한다. "이 내용은 따로 검색되면
+좋겠다" 싶으면 제목을 하나 만들면 된다.
+
+### 검색 — 키워드와 임베딩을 함께 쓴다
+
+점수 = 키워드 매칭 + 임베딩 유사도 × `EMBEDDING_WEIGHT`.
+
+임베딩만 쓰지 않는 이유가 있다. 이 프로젝트의 임베딩 모델(`all-MiniLM-L6-v2`)은
+영어 중심이라 한국어 변별력이 거의 없다.
+
+| 언어 | 관련 있는 쌍 | 관련 없는 쌍 | 차이 |
+|---|---|---|---|
+| 영어 | 0.557 | -0.064 | **0.62** |
+| 한국어 | 0.833 | 0.735 | **0.098** |
+
+이 신호를 키워드와 같은 배점으로 더하면 무관한 자료가 검색되고 순위가 뒤집힌다.
+그래서 `MIN_EMBEDDING_SIMILARITY`(0.45) 아래는 버리고, 남은 것도
+`EMBEDDING_WEIGHT`(0.3)로 낮춰 더한다. **두 상수 모두 현재 모델에 매인
+임시방편이며, 한국어를 다루는 모델로 바꾸면 재검토해야 한다** (TASK-21).
+
+`embedding_fn`이 없으면 키워드 점수만으로 동작한다 (FewShot과 같은 정책).
+
+---
+
+## 6. 모듈 인터페이스
 
 ```python
 class KnowledgeModule:
-    def __init__(self, knowledge_dir: str):
-        """지식 디렉토리를 설정한다."""
+    def __init__(self, knowledge_dir: str, embedding_fn=None): ...
 
-    def load_all(self) -> None:
-        """지식 디렉토리의 모든 파일을 로드하여 구조화/비구조화 데이터를 저장한다."""
+    def load_all(self) -> None: ...
+    @property
+    def load_issues(self) -> list[AssetLoadIssue]: ...
 
-    def to_prompt(self) -> str:
-        """전체 지식을 프롬프트 문자열로 변환한다. (기존 호환)"""
+    def era(self) -> str:            # front matter에서. 없으면 ""
+    def base_text(self) -> str:      # 배경지식 원문
+    def to_index(self) -> str:       # 일반지식 목차
+    def to_base_prompt(self) -> str: # 원문 + 목차 (뇌가 받는 형태)
 
-    def get_world(self) -> dict | None:
-        """세계관 정보를 반환한다."""
-
-    def get_characters(self) -> list[dict]:
-        """타 캐릭터 목록을 반환한다."""
-
-    def get_character(self, name: str) -> dict | None:
-        """특정 캐릭터 정보를 반환한다."""
-
-    def get_relationships(self) -> list[dict]:
-        """관계 그래프를 반환한다."""
-
-    def get_relationships_for(self, character: str) -> list[dict]:
-        """특정 캐릭터 관련 관계만 반환한다."""
-
-    def get_timeline(self) -> list[dict]:
-        """타임라인 이벤트를 반환한다."""
-
-    def get_locations(self) -> list[dict]:
-        """장소 목록을 반환한다."""
-
-    def search_relevant(self, query: str, token_budget: int = 500) -> str:
-        """쿼리와 관련된 지식만 선택하여 프롬프트 문자열로 반환한다."""
+    def chunks(self) -> list[KnowledgeChunk]: ...
+    def search_relevant(self, query: str, token_budget: int = 500) -> str: ...
 ```
 
-### search_relevant() 로직
+발화 단계(Stage 2)에는 `base_text()`만 간다. 목차는 "무엇을 더 찾아볼 수
+있는가"이므로 검색을 결정하는 뇌에만 필요하다.
 
-1. 쿼리에서 키워드 추출
-2. 각 knowledge 항목과 키워드 매칭 (이름, 설명, 사건 등)
-3. 관련성 높은 순으로 정렬
-4. token_budget 내에서 선택
-5. 프롬프트 문자열로 조립
+---
 
-### to_prompt() 출력 형식 (기존 호환)
+## 7. v2 → v3 마이그레이션
 
-```
-[캐릭터 지식]
---- world.yaml ---
-{조선시대 세계관 요약}
-
---- characters/father.yaml ---
-{아버지 정보}
-
---- relationships.yaml ---
-{관계 그래프}
-
---- timeline.yaml ---
-{타임라인}
-```
-
-### get_world() 프롬프트 변환
-
-```
-[세계관: 조선시대 세계관]
-시대: 조선 중기
-{description}
-규칙:
-- 서자는 과거를 볼 수 없다
-- 양반-상민-천민 신분제
-```
-
-### get_characters() 프롬프트 변환
-
-```
-[등장인물]
-- 아버지: {identity}. {personality}. 홍길동과의 관계: {relationship}
-- 친구: {identity}. {personality}.
-```
-
-### get_relationships_for("홍길동") 프롬프트 변환
-
-```
-[관계]
-- 홍길동 → 아버지: 부자 관계, 분노. {description}
-- 홍길동 → 친구: 친구, 신뢰. {description}
-```
-
-## 6. 검증 기준
-
-| 검증 | 기준 |
-|---|---|
-| world 로드 | type:world YAML → get_world() 반환 |
-| character 로드 | type:character YAML → get_characters() 포함 |
-| relationship 로드 | type:relationships YAML → get_relationships() 반환 |
-| timeline 로드 | type:timeline YAML → get_timeline() 반환 |
-| location 로드 | type:locations YAML → get_locations() 반환 |
-| freeform 호환 | 기존 .md/.json/.txt 파일 정상 로드 |
-| search_relevant | 키워드 매칭 → 관련 지식만 반환 |
-| 빈 디렉토리 | to_prompt() → "지식 없음" |
-| 하위 디렉토리 | characters/, freeform/ 하위 파일 스캔 |
+1. `world.yaml` → `base/01-world.md`. `era`는 front matter로, `description`과
+   `rules`는 산문으로 옮긴다.
+2. `relationships.yaml` → 사용자·주요 인물은 `persona.yaml`로, 나머지는
+   `general/`의 마크다운으로.
+3. `timeline.yaml` · `locations.yaml` → `general/`의 마크다운. 항목 하나가
+   검색 단위가 되도록 `##` 로 끊는다.
+4. 남은 `.yaml`은 읽히지 않는다. 지우거나 `.md`로 옮긴다.

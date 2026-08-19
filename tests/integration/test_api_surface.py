@@ -5,8 +5,8 @@
 순서까지 고정하는 이유가 있다. FastAPI는 먼저 등록된 라우트를 먼저 매칭하므로,
 분리 과정에서 순서가 뒤집히면 조용히 다른 핸들러가 응답한다.
 
-- `/api/knowledge/relationships`가 `/api/knowledge/{name}`보다 뒤로 가면,
-  `{name}`이 "relationships"를 잡아먹는다.
+- 리터럴 경로(`/api/knowledge/<무엇>`)가 `/api/knowledge/{name}`보다 뒤로 가면,
+  `{name}`이 그것을 잡아먹는다.
 - SPA catch-all `/{full_path:path}`가 앞으로 가면 **모든 API가 죽는다.**
 
 둘 다 테스트 없이는 눈으로 잡기 어렵고, 라우터 분리에서 가장 흔한 사고다.
@@ -45,10 +45,6 @@ EXPECTED_ROUTES = [
     ("/api/persona", ("GET",)),
     ("/api/persona", ("PUT",)),
     ("/api/knowledge", ("GET",)),
-    ("/api/knowledge/relationships", ("GET",)),
-    ("/api/knowledge/relationships/{character}", ("GET",)),
-    ("/api/knowledge/timeline", ("GET",)),
-    ("/api/knowledge/locations", ("GET",)),
     ("/api/knowledge/{name}", ("GET",)),
     ("/api/knowledge/{name}", ("PUT",)),
     ("/api/fewshot", ("GET",)),
@@ -121,16 +117,17 @@ class TestShadowingHazards:
                 return i
         raise AssertionError(f"경로를 찾을 수 없다: {method} {path}")
 
-    def test_literal_knowledge_paths_precede_wildcard(self):
+    def test_no_literal_knowledge_path_hides_behind_the_wildcard(self):
+        """리터럴 경로가 `{name}` 뒤에 오면 조용히 파일 조회로 넘어간다.
+
+        지금은 해당 경로가 없지만, 새로 추가할 때 순서를 틀리는 것이
+        라우터 작업에서 가장 흔한 사고다.
+        """
         wildcard = self._index("/api/knowledge/{name}")
-        for literal in (
-            "/api/knowledge/relationships",
-            "/api/knowledge/timeline",
-            "/api/knowledge/locations",
-        ):
-            assert self._index(literal) < wildcard, (
-                f"{literal}이 /api/knowledge/{{name}} 뒤에 있어 잡아먹힌다"
-            )
+
+        for index, (path, _methods) in enumerate(_actual_routes()):
+            if path.startswith("/api/knowledge/") and "{" not in path:
+                assert index < wildcard, f"{path}이 /api/knowledge/{{name}} 뒤에 있어 잡아먹힌다"
 
     def test_spa_catch_all_is_last(self):
         routes = _actual_routes()

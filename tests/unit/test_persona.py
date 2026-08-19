@@ -259,3 +259,25 @@ class TestGetExamples:
         examples = mod.get_examples()
 
         assert examples == []
+
+
+class TestRelationshipsAreAlwaysKnown:
+    """사용자와의 관계는 매 대화에 필요하다 — 도구로 찾아야 알면 안 된다 (TASK-22)."""
+
+    def test_relationships_appear_in_system_prompt(self, persona_path: str):
+        persona = PersonaModule(persona_path)
+        persona.load()
+
+        prompt = persona.to_system_prompt()
+
+        assert "관계" in prompt
+
+    def test_user_relationship_is_included(self, persona_path: str):
+        persona = PersonaModule(persona_path)
+        persona.load()
+
+        targets = [r.get("target") for r in persona.get_relationships()]
+        prompt = persona.to_system_prompt()
+
+        assert "사용자" in targets
+        assert any(str(t) in prompt for t in targets)

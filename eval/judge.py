@@ -60,11 +60,10 @@ def load_character_profile(character_dir: Path | str) -> CharacterProfile:
 
     knowledge = KnowledgeModule(str(layout.knowledge_dir))
     knowledge.load_all()
-    world = knowledge.get_world() or {}
 
     return CharacterProfile(
         name=data.get("name", ""),
-        era=world.get("era", ""),
+        era=knowledge.era(),
         speech=speaking.get("summary", ""),
     )
 

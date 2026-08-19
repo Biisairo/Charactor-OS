@@ -27,6 +27,7 @@ from src.api.schemas import (
 from src.api.worker import CharacterWorker
 from src.character_layout import CharacterLayout
 from src.character_os import CharacterOS
+from src.modules.knowledge import BASE_DIRNAME, GENERAL_DIRNAME, KnowledgeModule
 
 router = APIRouter(prefix="/api", tags=["characters"])
 
@@ -163,54 +164,108 @@ def _write_knowledge_assets(
     knowledge: CharacterKnowledgeData | None,
     delete_empty: bool = False,
 ) -> None:
-    """질문지 응답으로 knowledge/ 아래 구조화 파일을 쓴다.
+    """질문지 응답을 knowledge/ 아래 **마크다운**으로 쓴다 (SPEC-04 v3).
+
+    세계관은 늘 참인 배경이므로 `base/`로, 인물·장소·연표는 찾아 쓰는 자료이므로
+    `general/`로 간다. 항목 하나가 `##` 하나가 되어 그대로 검색 단위가 된다.
 
     비어 있는 섹션은 파일을 만들지 않는다. `world` 같은 dict는 truthy 검사로는
     빈 문자열만 채워진 껍데기도 지나가므로, 값이 하나라도 있는 경우만 쓴다.
     `delete_empty=True`(기존 캐릭터 수정)면 빈 섹션의 이전 파일을 지운다 —
     질문지에서 비운 내용이 파일에 남아 있으면 안 된다.
     """
+    base_dir = knowledge_dir / BASE_DIRNAME
+    general_dir = knowledge_dir / GENERAL_DIRNAME
+
     world_filled = (
         knowledge is not None
         and knowledge.world
         and any(len(v) > 0 if isinstance(v, list) else bool(v) for v in knowledge.world.values())
     )
-    locations_filled = knowledge is not None and bool(knowledge.locations)
-    relationships_filled = knowledge is not None and bool(knowledge.relationships)
-    timeline_filled = knowledge is not None and bool(knowledge.timeline)
-    freeform_filled = knowledge is not None and bool(
-        knowledge.freeform and knowledge.freeform.strip()
-    )
+    sections = [
+        (general_dir / "people.md", _render_people(knowledge)),
+        (general_dir / "places.md", _render_places(knowledge)),
+        (general_dir / "history.md", _render_history(knowledge)),
+        (
+            general_dir / "notes.md",
+            (knowledge.freeform or "").strip() if knowledge is not None else "",
+        ),
+    ]
 
     if world_filled:
-        _dump_yaml(knowledge_dir / "world.yaml", {"type": "world", **knowledge.world})
+        _write_text(base_dir / "01-world.md", _render_world(knowledge.world))
     elif delete_empty:
-        _remove_if_exists(knowledge_dir / "world.yaml")
-    if locations_filled:
-        _dump_yaml(
-            knowledge_dir / "locations.yaml",
-            {"type": "locations", "locations": knowledge.locations},
-        )
-    elif delete_empty:
-        _remove_if_exists(knowledge_dir / "locations.yaml")
-    if relationships_filled:
-        _dump_yaml(
-            knowledge_dir / "relationships.yaml",
-            {"type": "relationships", "relationships": knowledge.relationships},
-        )
-    elif delete_empty:
-        _remove_if_exists(knowledge_dir / "relationships.yaml")
-    if timeline_filled:
-        _dump_yaml(
-            knowledge_dir / "timeline.yaml",
-            {"type": "timeline", "events": knowledge.timeline},
-        )
-    elif delete_empty:
-        _remove_if_exists(knowledge_dir / "timeline.yaml")
-    if freeform_filled:
-        (knowledge_dir / "notes.md").write_text(knowledge.freeform, encoding="utf-8")
-    elif delete_empty:
-        _remove_if_exists(knowledge_dir / "notes.md")
+        _remove_if_exists(base_dir / "01-world.md")
+
+    for path, body in sections:
+        if body:
+            _write_text(path, body)
+        elif delete_empty:
+            _remove_if_exists(path)
+
+
+def _write_text(path: Path, body: str) -> None:
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text(body.rstrip() + "\n", encoding="utf-8")
+
+
+def _render_world(world: dict) -> str:
+    """세계관 → 배경 문서. `era`는 시스템이 읽으므로 앞머리 메타로 남긴다."""
+    era = str(world.get("era") or "").strip()
+    lines = []
+    if era:
+        lines += ["---", f"era: {era}", "---", ""]
+
+    lines.append(f"# {world.get('name') or '세계관'}")
+
+    if description := str(world.get("description") or "").strip():
+        lines += ["", description]
+
+    for label, key in [("규칙", "rules"), ("기술 수준", "technology_level"), ("사회 구조", "social_structure")]:
+        value = world.get(key)
+        if not value:
+            continue
+        lines += ["", f"## {label}", ""]
+        if isinstance(value, list):
+            lines += [f"- {item}" for item in value]
+        else:
+            lines.append(str(value))
+
+    return "\n".join(lines)
+
+
+def _render_people(knowledge: CharacterKnowledgeData | None) -> str:
+    if knowledge is None or not knowledge.relationships:
+        return ""
+    lines = ["# 주변 사람들"]
+    for rel in knowledge.relationships:
+        target = rel.get("to") or rel.get("target") or "?"
+        lines += ["", f"## {target}", ""]
+        detail = [str(rel[key]) for key in ("type", "sentiment", "description") if rel.get(key)]
+        lines.append(" — ".join(detail) if detail else "(내용 없음)")
+    return "\n".join(lines)
+
+
+def _render_places(knowledge: CharacterKnowledgeData | None) -> str:
+    if knowledge is None or not knowledge.locations:
+        return ""
+    lines = ["# 오가는 곳"]
+    for loc in knowledge.locations:
+        lines += ["", f"## {loc.get('name') or '?'}", ""]
+        detail = [str(loc[key]) for key in ("description", "significance") if loc.get(key)]
+        lines.append(" ".join(detail) if detail else "(내용 없음)")
+    return "\n".join(lines)
+
+
+def _render_history(knowledge: CharacterKnowledgeData | None) -> str:
+    if knowledge is None or not knowledge.timeline:
+        return ""
+    lines = ["# 지나온 일"]
+    for entry in knowledge.timeline:
+        lines += ["", f"## {entry.get('time') or '?'}", ""]
+        detail = [str(entry[key]) for key in ("event", "impact") if entry.get(key)]
+        lines.append(" ".join(detail) if detail else "(내용 없음)")
+    return "\n".join(lines)
 
 
 def _write_example_assets(
@@ -278,12 +333,80 @@ def _load_yaml(path: Path) -> dict | None:
         return None
 
 
+def _read_sections(path: Path) -> list[tuple[str, str]]:
+    """`## 제목` 단위로 (제목, 본문)을 뽑는다. 없으면 빈 목록."""
+    if not path.exists():
+        return []
+
+    sections: list[tuple[str, str]] = []
+    title = ""
+    body: list[str] = []
+    for line in path.read_text(encoding="utf-8").split("\n"):
+        if line.startswith("## "):
+            if title:
+                sections.append((title, "\n".join(body).strip()))
+            title = line[3:].strip()
+            body = []
+        elif title:
+            body.append(line)
+    if title:
+        sections.append((title, "\n".join(body).strip()))
+    return sections
+
+
+def _read_knowledge_draft(knowledge_dir: Path) -> dict:
+    """마크다운 자산을 질문지 응답 형태로 되읽는다 (SPEC-04 v3).
+
+    저작 형식이 마크다운으로 통일되면서 왕복은 **손실적**이 됐다. 항목의 세부
+    필드(관계의 type·sentiment 등)는 설명 한 덩어리로 합쳐진다. 질문지는 처음
+    만들 때 쓰는 도구이고, 이후 다듬기는 마크다운을 직접 고치는 편이 자연스럽다.
+    """
+    knowledge: dict = {}
+    base_dir = knowledge_dir / BASE_DIRNAME
+    general_dir = knowledge_dir / GENERAL_DIRNAME
+
+    world_path = base_dir / "01-world.md"
+    if world_path.exists():
+        module = KnowledgeModule(str(knowledge_dir))
+        module.load_all()
+        raw = world_path.read_text(encoding="utf-8")
+        sections = dict(_read_sections(world_path))
+        world: dict = {}
+        if era := module.era():
+            world["era"] = era
+        for line in raw.split("\n"):
+            if line.startswith("# "):
+                world["name"] = line[2:].strip()
+                break
+        if rules := sections.get("규칙"):
+            world["rules"] = [ln.lstrip("- ").strip() for ln in rules.split("\n") if ln.strip()]
+        for label, key in [("기술 수준", "technology_level"), ("사회 구조", "social_structure")]:
+            if value := sections.get(label):
+                world[key] = value
+        if world:
+            knowledge["world"] = world
+
+    if people := _read_sections(general_dir / "people.md"):
+        knowledge["relationships"] = [{"to": t, "description": b} for t, b in people]
+    if places := _read_sections(general_dir / "places.md"):
+        knowledge["locations"] = [{"name": t, "description": b} for t, b in places]
+    if history := _read_sections(general_dir / "history.md"):
+        knowledge["timeline"] = [{"time": t, "event": b} for t, b in history]
+
+    notes = general_dir / "notes.md"
+    if notes.exists():
+        # 저장할 때 끝 개행을 하나로 고르므로, 읽을 때도 걷어내 왕복을 안정시킨다.
+        knowledge["freeform"] = notes.read_text(encoding="utf-8").rstrip("\n")
+
+    return knowledge
+
+
 @router.get("/characters/{character_id}/draft")
 def get_character_draft(character_id: str):
     """기존 캐릭터의 static/ 을 질문지 응답 형태로 돌려준다.
 
     위저지를 "질문지로 다시 열기"로 재사용할 때 쓴다. 표준 5개 knowledge
-    파일과 5개 예시 파일, notes.md만 읽는다 — 질문지가 관리하는 범위다.
+    마크다운 자산을 되읽으므로 왕복은 손실적이다 — `_read_knowledge_draft` 참조.
     """
     char_dir = safe_child(CHARACTERS_DIR, character_id, SAFE_SEGMENT)
     if not CharacterLayout.of(char_dir).is_character():
@@ -292,22 +415,7 @@ def get_character_draft(character_id: str):
     layout = CharacterLayout.of(char_dir)
     persona = _load_yaml(layout.persona_path) or {}
 
-    knowledge: dict = {}
-    world = _load_yaml(layout.knowledge_dir / "world.yaml")
-    if world:
-        knowledge["world"] = {k: v for k, v in world.items() if k != "type"}
-    locations = _load_yaml(layout.knowledge_dir / "locations.yaml")
-    if locations:
-        knowledge["locations"] = locations.get("locations", [])
-    relationships = _load_yaml(layout.knowledge_dir / "relationships.yaml")
-    if relationships:
-        knowledge["relationships"] = relationships.get("relationships", [])
-    timeline = _load_yaml(layout.knowledge_dir / "timeline.yaml")
-    if timeline:
-        knowledge["timeline"] = timeline.get("events", [])
-    notes = layout.knowledge_dir / "notes.md"
-    if notes.exists():
-        knowledge["freeform"] = notes.read_text(encoding="utf-8")
+    knowledge = _read_knowledge_draft(layout.knowledge_dir)
 
     examples: dict = {}
     for key in ("greeting", "comfort", "conflict", "humor", "daily"):

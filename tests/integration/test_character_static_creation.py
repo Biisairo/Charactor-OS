@@ -13,6 +13,10 @@ import yaml
 
 from src.api import schemas
 from src.api.routers import characters as chars_router
+from src.api.routers.characters import _write_knowledge_assets
+from src.api.schemas import CharacterKnowledgeData
+from src.character_layout import CharacterLayout
+from src.modules.knowledge import KnowledgeModule
 
 
 def _draft() -> dict:
@@ -138,20 +142,15 @@ class TestCreateWithStaticData:
         assert persona["personality"]["traits"] == ["밝은"]
         assert persona["inner_world"]["hidden_feelings"] == "두려움"
 
-        # knowledge — type 필드가 붙어 KnowledgeModule 스키마로 저장된다
-        world = yaml.safe_load((static / "knowledge" / "world.yaml").read_text(encoding="utf-8"))
-        assert world["type"] == "world"
-        assert world["name"] == "모험의 땅"
-        locations = yaml.safe_load((static / "knowledge" / "locations.yaml").read_text(encoding="utf-8"))
-        assert locations["type"] == "locations"
-        assert locations["locations"][0]["name"] == "고향 마을"
-        rel = yaml.safe_load((static / "knowledge" / "relationships.yaml").read_text(encoding="utf-8"))
-        assert rel["type"] == "relationships"
-        assert rel["relationships"][0]["strength"] == 0.8
-        timeline = yaml.safe_load((static / "knowledge" / "timeline.yaml").read_text(encoding="utf-8"))
-        assert timeline["type"] == "timeline"
-        assert timeline["events"][0]["impact"] == "모험의 시작"
-        assert (static / "knowledge" / "notes.md").read_text(encoding="utf-8") == (
+        # knowledge — 마크다운으로 저장된다 (SPEC-04 v3). 세계관은 base/,
+        # 인물·장소·연표는 general/ 로 간다.
+        knowledge = static / "knowledge"
+        world = (knowledge / "base" / "01-world.md").read_text(encoding="utf-8")
+        assert "모험의 땅" in world
+        assert (knowledge / "general" / "places.md").read_text(encoding="utf-8").count("고향 마을")
+        assert "## " in (knowledge / "general" / "people.md").read_text(encoding="utf-8")
+        assert "모험의 시작" in (knowledge / "general" / "history.md").read_text(encoding="utf-8")
+        assert (knowledge / "general" / "notes.md").read_text(encoding="utf-8").strip() == (
             "여행 일지: 첫날 무사히 출발."
         )
 
@@ -178,7 +177,7 @@ class TestCreateWithStaticData:
         chars_router.create_character(req)
 
         static = isolated_characters_dir / "테스트캐릭" / "static"
-        assert not (static / "knowledge" / "world.yaml").exists()
+        assert not (static / "knowledge" / "base" / "01-world.md").exists()
         assert not (static / "knowledge" / "notes.md").exists()
         assert not (static / "examples" / "greeting.yaml").exists()
 
@@ -254,11 +253,12 @@ class TestUpdateStatic:
         assert resp == {"status": "ok", "character": "테스트캐릭"}
 
         static = isolated_characters_dir / "테스트캐릭" / "static"
-        assert (static / "knowledge" / "world.yaml").exists()
-        assert not (static / "knowledge" / "locations.yaml").exists()
-        assert not (static / "knowledge" / "relationships.yaml").exists()
-        assert not (static / "knowledge" / "timeline.yaml").exists()
-        assert not (static / "knowledge" / "notes.md").exists()
+        knowledge = static / "knowledge"
+        assert (knowledge / "base" / "01-world.md").exists()
+        assert not (knowledge / "general" / "places.md").exists()
+        assert not (knowledge / "general" / "people.md").exists()
+        assert not (knowledge / "general" / "history.md").exists()
+        assert not (knowledge / "general" / "notes.md").exists()
         assert (static / "examples" / "greeting.yaml").exists()
         assert not (static / "examples" / "comfort.yaml").exists()
 
@@ -274,3 +274,87 @@ class TestUpdateStatic:
                 "없는캐릭", schemas.CharacterStaticData()
             )
         assert exc.value.status_code == 404
+
+
+class TestKnowledgeIsWrittenAsMarkdown:
+    """위저드 산출물도 v3 규격을 따라야 한다 — YAML은 이제 읽히지 않는다 (TASK-22)."""
+
+    def _knowledge_dir(self, tmp_path):
+        return CharacterLayout.of(tmp_path).knowledge_dir
+
+    def test_world_becomes_base_document(self, tmp_path):
+        _write_knowledge_assets(
+            self._knowledge_dir(tmp_path),
+            CharacterKnowledgeData(
+                world={"name": "개인방송 생태계", "era": "2020년대", "rules": ["클립은 남는다"]}
+            ),
+        )
+
+        base = self._knowledge_dir(tmp_path) / "base" / "01-world.md"
+
+        assert base.exists()
+        body = base.read_text(encoding="utf-8")
+        assert "era: 2020년대" in body
+        assert "클립은 남는다" in body
+
+    def test_era_is_readable_by_the_module(self, tmp_path):
+        _write_knowledge_assets(
+            self._knowledge_dir(tmp_path),
+            CharacterKnowledgeData(world={"name": "세계", "era": "조선 중기"}),
+        )
+
+        module = KnowledgeModule(str(self._knowledge_dir(tmp_path)))
+        module.load_all()
+
+        assert module.era() == "조선 중기"
+
+    def test_people_places_history_go_to_general(self, tmp_path):
+        _write_knowledge_assets(
+            self._knowledge_dir(tmp_path),
+            CharacterKnowledgeData(
+                relationships=[{"to": "엄마", "type": "모녀", "description": "서먹하다"}],
+                locations=[{"name": "자취방", "description": "6평 원룸"}],
+                timeline=[{"time": "20세", "event": "첫 방송"}],
+            ),
+        )
+
+        general = self._knowledge_dir(tmp_path) / "general"
+
+        assert "엄마" in (general / "people.md").read_text(encoding="utf-8")
+        assert "자취방" in (general / "places.md").read_text(encoding="utf-8")
+        assert "첫 방송" in (general / "history.md").read_text(encoding="utf-8")
+
+    def test_entries_become_searchable_chunks(self, tmp_path):
+        _write_knowledge_assets(
+            self._knowledge_dir(tmp_path),
+            CharacterKnowledgeData(
+                relationships=[{"to": "엄마", "type": "모녀", "description": "서먹하다"}]
+            ),
+        )
+
+        module = KnowledgeModule(str(self._knowledge_dir(tmp_path)))
+        module.load_all()
+
+        assert "엄마" in module.search_relevant("엄마")
+
+    def test_no_yaml_is_written(self, tmp_path):
+        _write_knowledge_assets(
+            self._knowledge_dir(tmp_path),
+            CharacterKnowledgeData(
+                world={"era": "조선"},
+                relationships=[{"to": "어머니", "type": "모자"}],
+            ),
+        )
+
+        assert list(self._knowledge_dir(tmp_path).rglob("*.yaml")) == []
+
+    def test_emptied_section_removes_its_file(self, tmp_path):
+        knowledge_dir = self._knowledge_dir(tmp_path)
+        _write_knowledge_assets(
+            knowledge_dir,
+            CharacterKnowledgeData(relationships=[{"to": "엄마", "type": "모녀"}]),
+        )
+
+        _write_knowledge_assets(knowledge_dir, CharacterKnowledgeData(), delete_empty=True)
+
+        assert not (knowledge_dir / "general" / "people.md").exists()

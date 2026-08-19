@@ -96,6 +96,23 @@ class PersonaModule:
         if secrets := d.get("secrets"):
             parts.append(f"[남들이 모르는 것]\n{', '.join(secrets)}\n")
 
+        # 관계 — 특히 사용자와의 관계는 매 대화에 필요하다. 예전에는 도구로만
+        # 접근할 수 있어, 뇌가 그 도구를 부르지 않으면 상대가 누구인지 몰랐다 (TASK-22).
+        if relationships := d.get("relationships"):
+            lines = ["[관계]"]
+            for rel in relationships:
+                target = rel.get("target") or rel.get("to") or ""
+                if not target:
+                    continue
+                detail = " ".join(
+                    part
+                    for part in [rel.get("type", ""), rel.get("description", "")]
+                    if part
+                )
+                lines.append(f"- {target}: {detail}".rstrip(": "))
+            if len(lines) > 1:
+                parts.append("\n".join(lines) + "\n")
+
         # 메타 인식 — 캐릭터가 자신과 세계 바깥(현실)을 어떻게 보는가
         if meta := d.get("meta_awareness"):
             parts.append(f"[메타 인식]\n{meta}\n")

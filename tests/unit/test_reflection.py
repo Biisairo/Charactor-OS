@@ -310,7 +310,7 @@ class TestReviewCriteriaFromEvaluation:
             client=MockClient(),
             persona=_make_persona(),
             emotion=_make_emotion(),
-            knowledge=_Knowledge({"era": "조선 중기 (16세기)"}),
+            knowledge=_Knowledge("조선 중기 (16세기)"),
         )
 
         prompt = reviewer._build_review_prompt("안녕하시오", "안녕하세요")
@@ -351,57 +351,52 @@ class TestReviewCriteriaFromEvaluation:
 class _Knowledge:
     """세계관 스텁. era가 없는 캐릭터도 표현할 수 있어야 한다."""
 
-    def __init__(self, world: dict | None):
-        self._world = world
+    def __init__(self, era: str = ""):
+        self._era = era
 
-    def get_world(self) -> dict | None:
-        return self._world
+    def era(self) -> str:
+        return self._era
 
 
-def _reviewer_with_world(world: dict | None, name: str = "소민찌") -> ReflectionReviewer:
+def _reviewer_with_world(era: str, name: str = "소민찌") -> ReflectionReviewer:
     return ReflectionReviewer(
         client=MockClient(),
         persona=_make_persona(name),
         emotion=_make_emotion(),
-        knowledge=_Knowledge(world),
+        knowledge=_Knowledge(era),
     )
 
 
 class TestEraComesFromTheCharacter:
     """REQ-19-1 · 19-2"""
 
-    def _prompt(self, world: dict | None) -> str:
-        return _reviewer_with_world(world)._build_review_prompt("안녕", "안녕하세요")
+    def _prompt(self, era: str) -> str:
+        return _reviewer_with_world(era)._build_review_prompt("안녕", "안녕하세요")
 
     def test_modern_character_prompt_states_its_own_era(self):
-        prompt = self._prompt({"era": "2020년대 후반 대한민국 서울"})
+        prompt = self._prompt("2020년대 후반 대한민국 서울")
 
         assert "2020년대 후반 대한민국 서울" in prompt
 
     def test_modern_character_prompt_has_no_joseon_examples(self):
         """'서울 → 한양'을 현대 스트리머에게 들이대면 정상 응답이 FAIL된다."""
-        prompt = self._prompt({"era": "2020년대 후반 대한민국 서울"})
+        prompt = self._prompt("2020년대 후반 대한민국 서울")
 
         assert "한양" not in prompt
 
     def test_historical_character_still_gets_its_era(self):
-        prompt = self._prompt({"era": "조선 중기 (16세기)"})
+        prompt = self._prompt("조선 중기 (16세기)")
 
         assert "조선 중기 (16세기)" in prompt
 
     def test_missing_era_drops_the_criterion(self):
         """근거 없는 기준으로 FAIL을 주느니 검사하지 않는다 (REQ-19-2)."""
-        prompt = self._prompt(None)
-
-        assert "시대 정합성" not in prompt
-
-    def test_world_without_era_drops_the_criterion(self):
-        prompt = self._prompt({"name": "이름만 있는 세계관"})
+        prompt = self._prompt("")
 
         assert "시대 정합성" not in prompt
 
     def test_other_criteria_survive_without_era(self):
-        prompt = self._prompt(None)
+        prompt = self._prompt("")
 
         assert "응답 언어" in prompt
         assert "페르소나 유지" in prompt

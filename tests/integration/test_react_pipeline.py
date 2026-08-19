@@ -318,3 +318,75 @@ class TestReviewStatsAreLogged:
 
         assert "review_verdicts" in recorded[-1]["extra"]
         assert "regenerations" in recorded[-1]["extra"]
+
+
+# ---------------------------------------------------------------------------
+# 7. 배경지식과 일반지식 (TASK-20)
+# ---------------------------------------------------------------------------
+
+
+class TestKnowledgeSplit:
+    def _seed(self, character_dir: Path) -> None:
+        knowledge = CharacterLayout.of(character_dir).knowledge_dir
+        (knowledge / "base").mkdir(parents=True, exist_ok=True)
+        (knowledge / "base" / "creed.md").write_text(
+            "# 신조\n\n가난한 자의 것은 빼앗지 않는다.", encoding="utf-8"
+        )
+        (knowledge / "general").mkdir(parents=True, exist_ok=True)
+        (knowledge / "general" / "hideout.md").write_text(
+            "# 은신처\n\n## 산채 위치\n\n험한 골짜기 안쪽에 있다.", encoding="utf-8"
+        )
+
+    def test_background_reaches_the_brain(self, character_dir, tmp_path):
+        self._seed(character_dir)
+        client = PipelineMockClient()
+        cos = _cos(character_dir, tmp_path, client)
+
+        cos.chat("안녕")
+
+        brain_prompt = client.all_call_records[0]["messages"][0]["content"]
+        assert "가난한 자의 것은 빼앗지 않는다" in brain_prompt
+
+    def test_background_reaches_the_response_prompt(self, character_dir, tmp_path):
+        self._seed(character_dir)
+        client = PipelineMockClient()
+        cos = _cos(character_dir, tmp_path, client)
+
+        cos.chat("안녕")
+
+        response_prompt = next(
+            r["messages"][0]["content"]
+            for r in client.all_call_records
+            if r["messages"] and "[응답 규칙]" in str(r["messages"][0].get("content", ""))
+        )
+        assert "가난한 자의 것은 빼앗지 않는다" in response_prompt
+
+    def test_general_knowledge_is_only_an_index_until_searched(self, character_dir, tmp_path):
+        self._seed(character_dir)
+        client = PipelineMockClient()
+        cos = _cos(character_dir, tmp_path, client)
+
+        cos.chat("안녕")
+
+        brain_prompt = client.all_call_records[0]["messages"][0]["content"]
+        assert "산채 위치" in brain_prompt
+        assert "험한 골짜기" not in brain_prompt
+
+    def test_search_tool_reaches_general_knowledge(self, character_dir, tmp_path):
+        self._seed(character_dir)
+        client = PipelineMockClient(
+            brain_script=[
+                tool_step(tool_call("search_knowledge", query="산채")),
+                tool_step(finish_call(**DEFAULT_BRAIN_STRATEGY)),
+            ]
+        )
+        cos = _cos(character_dir, tmp_path, client)
+
+        cos.chat("산채가 어디 있소?")
+
+        response_prompt = next(
+            r["messages"][0]["content"]
+            for r in client.all_call_records
+            if r["messages"] and "[응답 규칙]" in str(r["messages"][0].get("content", ""))
+        )
+        assert "험한 골짜기" in response_prompt

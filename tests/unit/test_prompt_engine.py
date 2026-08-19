@@ -45,7 +45,7 @@ class TestBudgetRatios:
         assert sum(PromptEngine.BUDGET_RATIOS.values()) == 1.0
 
     def test_all_sections_present(self):
-        expected = {"fewshot", "knowledge", "relationships", "memory", "history"}
+        expected = {"fewshot", "knowledge", "memory", "history"}
         assert set(PromptEngine.BUDGET_RATIOS.keys()) == expected
 
     def test_every_budgeted_tool_maps_to_a_ratio(self):
@@ -224,3 +224,21 @@ class TestBaseline:
         engine.assemble_system_prompt(_Persona(), bundle)
 
         assert "emotion" not in engine.last_truncated
+
+
+class TestBackgroundKnowledgeReachesSpeech:
+    """배경지식은 발화 재료다 — 검색 없이 프롬프트에 있어야 한다 (TASK-20)."""
+
+    def test_background_knowledge_is_included(self):
+        bundle = _bundle()
+        bundle.baseline = {"knowledge": "[배경 지식]\n술 방송은 하지 않는다"}
+
+        assert "술 방송" in _engine().assemble_system_prompt(_Persona(), bundle)
+
+    def test_background_survives_a_tight_budget(self):
+        bundle = _bundle({"search_knowledge": "- 자료\n" * 300})
+        bundle.baseline = {"knowledge": "[배경 지식]\n술 방송은 하지 않는다"}
+
+        result = PromptEngine(max_tokens=200).assemble_system_prompt(_Persona(), bundle)
+
+        assert "술 방송" in result

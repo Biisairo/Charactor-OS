@@ -162,7 +162,7 @@ class CharacterOS:
             debug=debug,
             debug_output=self._debug_output,
         )
-        self.knowledge = KnowledgeModule(knowledge_dir)
+        self.knowledge = KnowledgeModule(knowledge_dir, embedding_fn=self._embed)
         self.history = HistoryModule(save_path=history_save_path)
         self.fewshot = FewShotModule(examples_dir, embedding_fn=self._embed)
         self.working_memory = WorkingMemoryModule(save_path=working_memory_path)
@@ -177,9 +177,9 @@ class CharacterOS:
 
         self._log("[모듈 로드] knowledge 로드 중...", module="orchestrator")
         self.knowledge.load_all()
-        char_count = len(self.knowledge.get_characters())
         self._log(
-            f"[모듈 로드] knowledge 완료: 캐릭터 {char_count}개",
+            f"[모듈 로드] knowledge 완료: 배경 {len(self.knowledge.base_text())}자 · "
+            f"검색 조각 {len(self.knowledge.chunks())}개",
             module="orchestrator",
         )
 

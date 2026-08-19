@@ -54,6 +54,8 @@ class ToolRegistry:
     """도구 정의와 모듈 바인딩을 한곳에 모은다."""
 
     def __init__(self, persona, emotion, memory, knowledge, history, fewshot):
+        # persona는 관계를 시스템 프롬프트에 직접 싣는다. 관계 조회 도구는
+        # 폐지했고 `search_knowledge`가 그 자리를 대신한다 (TASK-22).
         self._persona = persona
         self._emotion = emotion
         self._memory = memory
@@ -92,12 +94,6 @@ class ToolRegistry:
                     _Param("use_emotion", "boolean", "지금 감정을 반영할지", default=True),
                 ),
                 handler=self._search_fewshot,
-            ),
-            _Tool(
-                name="get_relationships",
-                description="특정 인물과 나의 관계를 조회한다.",
-                params=(_Param("name", "string", "인물 이름", required=True),),
-                handler=self._get_relationships,
             ),
             _Tool(
                 name="get_history",
@@ -232,31 +228,6 @@ class ToolRegistry:
         )
         return result or f"'{query}'와 비슷한 예시 없음"
 
-    def _get_relationships(self, name: str) -> str:
-        """이름으로 조회한다 — 쿼리 문자열에 이름이 있는지 훑던 방식을 대체한다."""
-        target = name.lower()
-        lines = [f"[{name}와의 관계]"]
-
-        for rel in self._persona.get_relationships():
-            if (rel.get("target") or rel.get("to") or "").lower() != target:
-                continue
-            parts = [rel.get("type", "")]
-            if rel.get("sentiment"):
-                parts.append(f"({rel['sentiment']})")
-            if rel.get("description"):
-                parts.append(f"— {rel['description']}")
-            lines.append("- " + " ".join(p for p in parts if p))
-
-        for rel in self._knowledge.get_relationships_for(name):
-            lines.append(
-                f"- {rel.get('from', '?')} → {rel.get('to', '?')}: "
-                f"{rel.get('type', '?')}, {rel.get('sentiment', '?')}"
-            )
-
-        if len(lines) == 1:
-            return f"{name}에 대해 기록된 관계 없음"
-        return "\n".join(lines)
-
     def _get_history(self, n: int = 10) -> str:
         return self._history.to_prompt(n=n) or "최근 대화 없음"
 
@@ -267,8 +238,10 @@ class ToolRegistry:
         return {
             "emotion": self._emotion.to_prompt(),
             "history": self._history.to_prompt(n=BASELINE_HISTORY_TURNS),
+            # 배경지식은 캐릭터의 상식이다. 판단할 때도, 말할 때도 알고 있어야 한다.
+            "knowledge": self._knowledge.base_text(),
         }
 
     def knowledge_index(self) -> str:
-        """뇌 전용. 무엇을 아는지의 목록이지 발화 재료가 아니다 (REQ-RA-74)."""
+        """뇌 전용. 무엇을 **더 찾아볼 수 있는지**의 목록이지 발화 재료가 아니다."""
         return self._knowledge.to_index()

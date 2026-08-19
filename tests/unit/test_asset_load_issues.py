@@ -90,35 +90,36 @@ class TestFewShotLoadIssues:
 # ---------------------------------------------------------------------------
 
 
-class TestKnowledgeFallbackIsDistinguishable:
-    def test_structured_parse_failure_is_marked_expected(self, tmp_path: Path):
-        """구조화 실패는 freeform 폴백이라는 의도된 동작이다."""
+class TestKnowledgeMetaFailureIsVisible:
+    """앞머리 메타가 깨져도 본문은 살리되, 조용히 넘기지 않는다 (TASK-22)."""
+
+    BROKEN_META = "---\nera: [닫히지 않음\n---\n\n# 세계\n\n본문은 멀쩡하다."
+
+    def test_broken_front_matter_is_recorded(self, tmp_path: Path):
         d = tmp_path / "knowledge"
         d.mkdir()
-        (d / "notes.yaml").write_text(BROKEN_YAML, encoding="utf-8")
+        (d / "world.md").write_text(self.BROKEN_META, encoding="utf-8")
 
         module = KnowledgeModule(str(d))
         module.load_all()
 
         assert len(module.load_issues) == 1
-        assert module.load_issues[0].expected is True, (
-            "freeform 폴백은 의도된 동작이므로 예기치 않은 실패와 구별되어야 한다"
-        )
+        assert module.load_issues[0].expected is False
 
-    def test_fallback_still_loads_content_as_freeform(self, tmp_path: Path):
+    def test_body_survives_broken_front_matter(self, tmp_path: Path):
         d = tmp_path / "knowledge"
         d.mkdir()
-        (d / "notes.yaml").write_text(BROKEN_YAML, encoding="utf-8")
+        (d / "world.md").write_text(self.BROKEN_META, encoding="utf-8")
 
         module = KnowledgeModule(str(d))
         module.load_all()
 
-        assert module._freeform, "폴백이면 내용은 freeform으로 남아야 한다"
+        assert module.chunks(), "메타가 깨져도 본문은 검색 가능해야 한다"
 
-    def test_structured_file_records_nothing(self, tmp_path: Path):
+    def test_clean_file_records_nothing(self, tmp_path: Path):
         d = tmp_path / "knowledge"
         d.mkdir()
-        (d / "world.yaml").write_text("type: world\nname: 조선\nera: 조선 중기\n", encoding="utf-8")
+        (d / "world.md").write_text("---\nera: 조선\n---\n\n# 세계\n\n본문", encoding="utf-8")
 
         module = KnowledgeModule(str(d))
         module.load_all()
@@ -143,16 +144,14 @@ class TestCharacterOSSurfacesIssues:
         joined = "\n".join(cos._debug_logs)
         assert "broken.yaml" in joined, "로드 실패가 로그에 파일명과 함께 남아야 한다"
 
-    def test_expected_fallback_is_labelled_differently(self, character_dir: Path, tmp_path: Path):
+    def test_knowledge_meta_failure_appears_in_logs(self, character_dir: Path, tmp_path: Path):
         from tests.conftest import MockClient, make_character_os
 
-        (CharacterLayout.of(character_dir).knowledge_dir / "notes.yaml").write_text(
-            BROKEN_YAML, encoding="utf-8"
+        (CharacterLayout.of(character_dir).knowledge_dir / "notes.md").write_text(
+            "---\nera: [닫히지 않음\n---\n\n# 메모\n\n본문", encoding="utf-8"
         )
         cos = make_character_os(character_dir, tmp_path / "state", MockClient())
 
-        lines = [line for line in cos._debug_logs if "notes.yaml" in line]
-        assert lines, "폴백도 기록은 되어야 한다"
-        assert any("폴백" in line for line in lines), (
-            "의도된 폴백은 실패와 다른 말로 기록되어야 한다 (REQ-06-3)"
+        assert any("notes.md" in line for line in cos._debug_logs), (
+            "지식 메타 손상이 파일명과 함께 로그에 남아야 한다"
         )

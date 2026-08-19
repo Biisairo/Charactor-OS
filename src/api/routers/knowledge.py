@@ -44,38 +44,6 @@ def list_knowledge():
     return {"entries": entries}
 
 
-@router.get("/knowledge/relationships")
-def get_relationships():
-    """관계 그래프 조회."""
-    cos = deps.get_cos()
-    cos.knowledge.load_all()
-    return {"relationships": cos.knowledge.get_relationships()}
-
-
-@router.get("/knowledge/relationships/{character}")
-def get_relationships_for(character: str):
-    """특정 캐릭터의 관계 조회."""
-    cos = deps.get_cos()
-    cos.knowledge.load_all()
-    return {"relationships": cos.knowledge.get_relationships_for(character)}
-
-
-@router.get("/knowledge/timeline")
-def get_timeline():
-    """타임라인 조회."""
-    cos = deps.get_cos()
-    cos.knowledge.load_all()
-    return {"events": cos.knowledge.get_timeline()}
-
-
-@router.get("/knowledge/locations")
-def get_locations():
-    """장소 목록 조회."""
-    cos = deps.get_cos()
-    cos.knowledge.load_all()
-    return {"locations": cos.knowledge.get_locations()}
-
-
 @router.get("/knowledge/{name}")
 def get_knowledge(name: str):
     """지식 파일 내용 조회 (원본 텍스트)."""

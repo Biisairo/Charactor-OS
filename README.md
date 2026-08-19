@@ -195,7 +195,7 @@ Reflection과 강화된 검토 기준이 **함께 있을 때만** 해결됩니�
     │   "무엇을 더 알아야 답할 수 있는가"를 스스로 판단        │
     │   도구 반복 호출 (최대 5루프, 자발 종료)                │
     │     search_memory / search_knowledge / search_fewshot │
-    │     get_relationships / get_history                   │
+    │     get_history                                       │
     │   → ThoughtBundle (근거 + 응답 전략)                   │
     └───────────────────┬───────────────────────────────────┘
                         │

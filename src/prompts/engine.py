@@ -15,7 +15,7 @@ MAX_PROMPT_TOKENS = 3000
 
 # 뇌가 도구 없이 이미 알던 것. 예산 배분 대상이 아니다 — 감정이 잘려나가면
 # 톤이 무너지고, 뇌가 본 상태와 발화가 보는 상태가 어긋난다 (SPEC-09 REQ-RA-73).
-BASELINE_ORDER = ("emotion", "history")
+BASELINE_ORDER = ("knowledge", "emotion", "history")
 
 
 class PromptEngine:
@@ -23,8 +23,7 @@ class PromptEngine:
 
     BUDGET_RATIOS = {
         "fewshot": 0.25,
-        "knowledge": 0.35,
-        "relationships": 0.10,
+        "knowledge": 0.45,
         "memory": 0.20,
         "history": 0.10,
     }
@@ -33,7 +32,6 @@ class PromptEngine:
     TOOL_BUDGET_KEYS = {
         "search_fewshot": "fewshot",
         "search_knowledge": "knowledge",
-        "get_relationships": "relationships",
         "search_memory": "memory",
         "get_history": "history",
     }
@@ -42,7 +40,6 @@ class PromptEngine:
     SECTION_ORDER = (
         "search_fewshot",
         "search_knowledge",
-        "get_relationships",
         "search_memory",
         "get_history",
     )
@@ -58,6 +55,7 @@ class PromptEngine:
 
         always = [
             persona.to_system_prompt(),
+            bundle.baseline.get("knowledge", ""),
             bundle.baseline.get("emotion", ""),
             persona.get_behavior_section(),
             persona.get_inner_world(),

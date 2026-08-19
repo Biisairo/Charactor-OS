@@ -23,7 +23,7 @@ Persona 스키마 확장, Knowledge 구조화, Few-shot 예시 시스템, 프롬
 | **Persona** | 정적 | `src/modules/persona.py` | - | 성격, 말투, 행동 지침, 감정 트리거, 내면 상태, 관계, few-shot |
 | **Emotion** | 동적 | `src/modules/emotion.py` | - | 감정 상태 추적, 0~1 스케일, 트리거 기반 |
 | **Memory** | 동적 | `src/modules/memory.py` | - | 대화에서 핵심 정보 추출, 가중치 기반 관리 |
-| **Knowledge** | 정적 | `src/modules/knowledge.py` | - | 세계관, 관계 그래프, 타임라인, 장소, 자유 형식 |
+| **Knowledge** | 정적 | `src/modules/knowledge.py` | - | 마크다운 지식. `base/`는 원문 주입, `general/`은 RAG 검색 (SPEC-04 v3) |
 | **History** | 동적 | `src/modules/history.py` | - | 대화 기록 관리, 최근 N개 조회 |
 | **FewShot** | 정적 | `src/modules/fewshot.py` | 신규 | 예시 대화 검색, 태그/임베딩/감정 기반 |
 | **WorkingMemory** | 동적 | `src/modules/working_memory.py` | 신규 | 미해결 질문·가설, 턴 너머 유지 (SPEC-09) |
@@ -48,8 +48,8 @@ Persona 스키마 확장, Knowledge 구조화, Few-shot 예시 시스템, 프롬
 │  도구를 반복 호출한다. 최대 5루프, 자발 종료.                    │
 │                                                              │
 │  도구 (찾아야 아는 것만):                                        │
-│  - search_memory(query, top_k)     - get_relationships(name)  │
-│  - search_knowledge(query)          - get_history(n)          │
+│  - search_memory(query, top_k)      - get_history(n)          │
+│  - search_knowledge(query)                                    │
 │  - search_fewshot(query, emotion)                             │
 │  - finish(...)  ← 종료 선언이자 응답 전략 확정                   │
 │                                                              │

@@ -159,8 +159,7 @@ class ReflectionReviewer:
         """캐릭터가 사는 시대. 알 수 없으면 빈 문자열."""
         if self._knowledge is None:
             return ""
-        world = self._knowledge.get_world() or {}
-        return str(world.get("era") or "").strip()
+        return self._knowledge.era()
 
     def _log(self, message: str) -> None:
         if self._debug:

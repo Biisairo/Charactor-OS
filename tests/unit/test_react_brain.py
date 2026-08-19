@@ -54,7 +54,10 @@ class _Knowledge:
         self._result = result
 
     def to_index(self) -> str:
-        return "[내가 아는 것]\n- 인물: 활빈당 두목"
+        return "[찾아볼 수 있는 것]\n- 인물: 활빈당 두목"
+
+    def base_text(self) -> str:
+        return "[배경 지식]\n조선은 신분제 사회다"
 
     def search_relevant(self, query: str, token_budget: int = 500) -> str:
         self._rec.record("knowledge.search_relevant", query=query)
@@ -279,7 +282,6 @@ class TestTools:
             "search_memory",
             "search_knowledge",
             "search_fewshot",
-            "get_relationships",
             "get_history",
             FINISH_TOOL,
         }
@@ -336,20 +338,6 @@ class TestTools:
         brain.think("힘들어")
 
         assert rec.calls[0][1]["emotions"] is None
-
-    def test_get_relationships_looks_up_by_name(self):
-        """문자열 포함 검사가 아니라 뇌가 지목한 이름으로 조회한다 (P-4 해소)."""
-        client = ScriptedClient(
-            [
-                tool_step(tool_call("get_relationships", name="임꺽정")),
-                tool_step(finish_call(**_FINISH)),
-            ]
-        )
-        brain, _ = _brain(client)
-
-        bundle = brain.think("그 친구 잘 지내?")
-
-        assert "임꺽정" in bundle.collected["get_relationships"]
 
     def test_get_history_passes_n(self):
         client = ScriptedClient(
@@ -671,6 +659,10 @@ class TestBaselineState:
     def test_knowledge_index_is_known(self):
         assert "활빈당" in self._system_prompt()
 
+    def test_background_knowledge_is_known(self):
+        """배경지식은 검색 없이 이미 알고 있어야 한다 (TASK-20)."""
+        assert "신분제" in self._system_prompt()
+
     def test_knowledge_body_is_not_inlined(self):
         """목차만 싣는다. 본문까지 실으면 루프마다 재전송된다 (REQ-RA-72)."""
         assert "의적 집단이다" not in self._system_prompt()
@@ -708,9 +700,13 @@ class TestBaselineReachesStageTwo:
     def test_history_is_carried_in_bundle(self):
         assert self._bundle().baseline["history"]
 
-    def test_knowledge_index_is_not_carried(self):
-        """목차는 검색 판단용이다. 발화 재료가 아니다 (REQ-RA-74)."""
-        assert "knowledge_index" not in self._bundle().baseline
+    def test_background_knowledge_is_carried(self):
+        """배경지식은 캐릭터의 상식이다. 말할 때도 알고 있어야 한다."""
+        assert "신분제" in self._bundle().baseline["knowledge"]
+
+    def test_index_is_not_carried(self):
+        """목차는 '무엇을 더 찾아볼 수 있는가'다. 발화 재료가 아니다 (REQ-RA-74)."""
+        assert "찾아볼 수 있는 것" not in self._bundle().baseline.get("knowledge", "")
 
 
 # ---------------------------------------------------------------------------
