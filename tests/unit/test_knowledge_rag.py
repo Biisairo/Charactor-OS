@@ -7,11 +7,18 @@
 
 from __future__ import annotations
 
+import math
 from pathlib import Path
 
 import numpy as np
 
-from src.modules.knowledge import MAX_CHUNK_CHARS, KnowledgeModule
+from src.embedding import QUERY
+from src.modules.knowledge import (
+    EMBEDDING_TOP_K,
+    MAX_CHUNK_CHARS,
+    NO_KEYWORD_GATE,
+    KnowledgeModule,
+)
 
 BROADCAST = """# 방송 정보
 
@@ -26,13 +33,30 @@ BROADCAST = """# 방송 정보
 """
 
 
-def _fake_embed(text: str) -> np.ndarray:
+def _fake_embed(text: str, _kind: str) -> np.ndarray:
     """결정론적 더미 임베딩. 같은 낱말을 공유할수록 가까워진다."""
     vec = np.zeros(64, dtype=np.float32)
     for word in set(text.lower().split()):
         vec[hash(word) % 64] += 1.0
     norm = np.linalg.norm(vec)
     return vec / norm if norm else vec
+
+
+def _controlled_embed(similarities: dict[str, float]):
+    """조각별 유사도를 지정하는 임베딩 더블.
+
+    질의를 단위원의 (1, 0)에 두고 조각을 (sim, √(1-sim²))에 두면 코사인이
+    정확히 `sim`이 된다. 순위 상한과 게이트는 경계값을 재는 테스트이므로
+    유사도가 우연에 좌우되면 안 된다.
+    """
+
+    def embed(text: str, kind: str) -> np.ndarray:
+        if kind == QUERY:
+            return np.array([1.0, 0.0], dtype=np.float32)
+        similarity = next((s for marker, s in similarities.items() if marker in text), 0.0)
+        return np.array([similarity, math.sqrt(max(0.0, 1.0 - similarity**2))], dtype=np.float32)
+
+    return embed
 
 
 def _write(root: Path, relative: str, body: str) -> None:
@@ -217,7 +241,7 @@ class TestHybridSearch:
     def test_broken_embedding_degrades_to_keywords(self, tmp_path):
         """임베딩이 죽어도 검색이 조용히 0건이 되면 안 된다 (REQ-15-1과 같은 원칙)."""
 
-        def _broken(_text):
+        def _broken(_text, _kind):
             raise RuntimeError("모델 없음")
 
         _write(tmp_path, "general/broadcast.md", BROADCAST)
@@ -226,6 +250,88 @@ class TestHybridSearch:
 
         assert "쏘하" in module.search_relevant("쏘하")
         assert any(not issue.expected for issue in module.load_issues)
+
+
+# ---------------------------------------------------------------------------
+# 5.1 순위 상한과 무키워드 게이트 (SPEC-12 REQ-21-6 ~ 21-8)
+#
+# 절대 임계값을 폐기한 자리다. 새 모델은 유사도가 0.79~0.86에 압축되어 적중과
+# 잡음의 분포가 겹치므로, 어떤 임계값으로도 "관련된 것이 없다"를 판정할 수
+# 없다 (SPEC-12 4.2). 대신 모델이 잘 하는 것 — 순위 — 를 쓴다.
+# ---------------------------------------------------------------------------
+
+THREE_SECTIONS = """# 자료
+
+## 첫째 절
+
+가장 비슷한 내용.
+
+## 둘째 절
+
+두 번째로 비슷한 내용.
+
+## 셋째 절
+
+세 번째로 비슷한 내용.
+"""
+
+
+class TestRankAndGate:
+    def _module_with(self, tmp_path, similarities: dict[str, float]) -> KnowledgeModule:
+        _write(tmp_path, "general/three.md", THREE_SECTIONS)
+        return _module(tmp_path, embed=_controlled_embed(similarities))
+
+    def test_gate_blocks_chunk_without_keyword(self, tmp_path):
+        """키워드 근거가 없는 조각은 게이트를 넘지 못하면 후보가 아니다."""
+        module = self._module_with(tmp_path, {"첫째": NO_KEYWORD_GATE - 0.01})
+
+        assert module.search_relevant("전혀 다른 표현") == ""
+
+    def test_gate_admits_chunk_above_threshold(self, tmp_path):
+        """의역 질의는 게이트를 넘겨 통과한다 — 임베딩을 붙인 이유다."""
+        module = self._module_with(tmp_path, {"첫째": NO_KEYWORD_GATE + 0.01})
+
+        assert "가장 비슷한 내용" in module.search_relevant("전혀 다른 표현")
+
+    def test_keyword_hit_is_exempt_from_gate(self, tmp_path):
+        """키워드가 걸린 조각에는 게이트를 적용하지 않는다.
+
+        이미 다른 근거가 있으므로 임베딩은 순위만 조정하면 된다.
+        """
+        module = self._module_with(tmp_path, {"첫째": 0.1})
+
+        assert "가장 비슷한 내용" in module.search_relevant("첫째 절")
+
+    def test_only_top_k_receive_bonus(self, tmp_path):
+        """상위 K개 밖은 유사도가 게이트를 넘어도 후보가 되지 않는다."""
+        module = self._module_with(tmp_path, {"첫째": 0.99, "둘째": 0.98, "셋째": 0.97})
+
+        result = module.search_relevant("전혀 다른 표현")
+
+        assert "세 번째로 비슷한 내용" not in result
+        assert EMBEDDING_TOP_K == 2
+
+    def test_top_k_are_all_returned(self, tmp_path):
+        module = self._module_with(tmp_path, {"첫째": 0.99, "둘째": 0.98, "셋째": 0.97})
+
+        result = module.search_relevant("전혀 다른 표현")
+
+        assert "가장 비슷한 내용" in result
+        assert "두 번째로 비슷한 내용" in result
+
+    def test_embedding_orders_results(self, tmp_path):
+        """키워드가 같은 두 조각의 순서는 임베딩이 정한다."""
+        module = self._module_with(tmp_path, {"둘째": 0.99, "첫째": 0.5})
+
+        result = module.search_relevant("비슷한 내용")
+
+        assert result.index("두 번째로") < result.index("가장 비슷한")
+
+    def test_no_embedding_uses_keywords_only(self, tmp_path):
+        """`embedding_fn`이 없으면 키워드 점수만으로 돈다 (기존 정책 유지)."""
+        _write(tmp_path, "general/three.md", THREE_SECTIONS)
+
+        assert "가장 비슷한 내용" in _module(tmp_path).search_relevant("첫째 절")
 
 
 # ---------------------------------------------------------------------------

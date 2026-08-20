@@ -4,6 +4,7 @@ from pathlib import Path
 
 import yaml
 
+from src.embedding import PASSAGE, QUERY, EmbeddingKind
 from src.modules.asset_issue import AssetLoadIssue
 
 # 목차에 실을 문서당 소제목 수. 목차가 본문만큼 길어지면 목차의 의미가 없다.
@@ -23,22 +24,36 @@ BASE_WARN_TOKENS = 1200
 # 검색 점수 하한. 이보다 낮으면 관련 없다고 본다.
 MIN_SEARCH_SCORE = 0.05
 
-# 임베딩 유사도를 점수에 반영하는 하한.
+# 임베딩 보너스를 받을 조각 수 (SPEC-12 REQ-21-7).
 #
-# 이 프로젝트의 임베딩 모델(`all-MiniLM-L6-v2`)은 영어 전용이라 한국어 질의를
-# 사실상 구분하지 못한다. 실측에서 "인삿말"과 "양자역학"의 유사도 분포가
-# 완전히 같았다(최고 0.264 / 대상 0.159). 그 구간의 점수를 그대로 더하면
-# 무관한 자료가 프롬프트에 실린다.
+# 절대 임계값을 쓰던 자리다. 임계값을 폐기한 이유는 실측이다 — 현재 모델은
+# 유사도가 0.79~0.86에 압축되어 적중(최소 0.822)과 잡음(최대 0.840)의 분포가
+# 겹친다. 절대값으로도 z-score 상대화로도 "관련된 것이 없다"를 판정할 수
+# 없었다 (SPEC-12 4.2).
 #
-# 임계 위(실측 "방송 시작 인사" 0.729)만 신호로 인정한다. 이 값은 모델 특성에
-# 매인 임시방편이며, 한국어 지원 모델로 바꾸면 함께 재검토해야 한다.
-MIN_EMBEDDING_SIMILARITY = 0.45
+# 대신 모델이 잘 하는 것을 쓴다 — **순위**다. 상위 2개로 제한하면 무관한
+# 질의가 끌어오는 조각이 top-1 정확도를 유지한 채 사라진다(69% · 무응답 100%).
+# 상위 3개로 넓히면 62%로 떨어졌다.
+EMBEDDING_TOP_K = 2
+
+# 키워드가 하나도 걸리지 않은 조각을 임베딩만으로 후보에 올릴 때 요구하는
+# 유사도 (SPEC-12 REQ-21-8).
+#
+# 키워드 근거가 있는 조각에는 적용하지 않는다 — 이미 다른 근거가 있으므로
+# 임베딩은 순위만 조정하면 된다. 게이트 없이 상위 2개를 그대로 쓰면 무관한
+# 질의마다 조각 2개가 프롬프트에 실린다 (SPEC-12 4.2).
+#
+# 이 값은 현재 모델의 분포에 매여 있다. 모델을 바꾸면 `eval/embedding_probe.py`
+# 를 다시 돌려 재조정해야 한다.
+NO_KEYWORD_GATE = 0.85
 
 # 임베딩 가중치. 키워드가 주 신호이고 임베딩은 보조다.
 #
 # 같은 배점으로 더하면 순위가 뒤집힌다. 실측: "방송 시작 인사"에 대해 키워드가
 # 3/3 적중한 조각(1.0)이, 1/3만 맞고 임베딩 0.729를 더한 조각(1.06)에 밀렸다.
-# 한국어에서 신뢰도가 낮은 신호가 확실한 신호를 이기면 안 된다.
+# 신뢰도가 낮은 신호가 확실한 신호를 이기면 안 된다.
+#
+# 0.5·1.0 에서도 결과가 같았다 (SPEC-12 4.2). 근거 없이 바꾸지 않는다.
 EMBEDDING_WEIGHT = 0.3
 
 _HEADING = re.compile(r"^(#{1,6})\s+(.*)$")
@@ -78,9 +93,10 @@ class KnowledgeModule:
     def __init__(self, knowledge_dir: str, embedding_fn=None):
         """
         Args:
-            embedding_fn: 임베딩 함수. 없으면 키워드 매칭만으로 검색한다
-                (FewShot과 같은 정책). 있으면 두 점수를 합산한다 — 임베딩 모델이
-                영어 중심이라 한국어 고유명사는 키워드가 더 정확히 잡는다.
+            embedding_fn: `(text, kind)` 를 받는 임베딩 함수. 없으면 키워드
+                매칭만으로 검색한다 (FewShot과 같은 정책). 있으면 두 점수를
+                합산한다 — 한국어 고유명사는 키워드가 더 정확히 잡고, 표현이
+                다른 질의는 임베딩이 잡는다 (SPEC-12 4.2).
         """
         self._dir = Path(knowledge_dir)
         self._embedding_fn = embedding_fn
@@ -202,7 +218,7 @@ class KnowledgeModule:
                         source=filename,
                         heading_path=heading_path,
                         text=text,
-                        embedding=self._embed(f"{heading_path}\n{text}"),
+                        embedding=self._embed(f"{heading_path}\n{text}", PASSAGE),
                     )
                 )
 
@@ -251,12 +267,12 @@ class KnowledgeModule:
                     chunks.append((heading_path, text))
         return chunks
 
-    def _embed(self, text: str):
+    def _embed(self, text: str, kind: EmbeddingKind):
         """임베딩. 실패는 한 번만 기록하고 키워드 검색으로 계속한다."""
         if self._embedding_fn is None:
             return None
         try:
-            return self._embedding_fn(text)
+            return self._embedding_fn(text, kind)
         except Exception as e:
             if not self._embedding_failed:
                 self._embedding_failed = True
@@ -347,26 +363,36 @@ class KnowledgeModule:
     def search_relevant(self, query: str, token_budget: int = 500) -> str:
         """일반지식에서 관련 조각을 찾아 프롬프트 문자열로 반환한다.
 
-        키워드와 임베딩을 함께 쓴다 (REQ-20-7). 임베딩 모델이 영어 중심이라
-        "쏘하" 같은 캐릭터 고유 어휘는 키워드가 더 정확히 잡고, 표현이 다른
-        질의는 임베딩이 잡는다. 하나만으로는 실사용에서 관측된 실패를 못 덮는다.
+        키워드와 임베딩을 함께 쓴다 (REQ-20-7). 둘의 역할이 다르다 — 키워드는
+        무관한 질의를 막고, 임베딩은 표현이 어긋난 질의를 잡는다. 키워드만
+        쓰면 top-1 이 6%로 떨어지고, 임베딩을 절대 임계로 섞으면 무관한 질의가
+        조각 17개를 끌어왔다 (SPEC-12 4.2).
+
+        임베딩은 두 가지로 제한해 쓴다. 유사도 상위 `EMBEDDING_TOP_K`개만
+        보너스를 받고, 키워드가 하나도 걸리지 않은 조각은 `NO_KEYWORD_GATE`를
+        넘어야 후보가 된다. 절대 임계값으로는 적중과 잡음을 가를 수 없다는
+        것이 실측이다 (SPEC-12 결정 9).
         """
         if not self._chunks or not query.strip():
             return ""
 
         query_words = set(_WORD.findall(query.lower()))
-        query_vec = self._embed(query)
+        scores = [
+            self._keyword_score(query_words, f"{chunk.heading_path}\n{chunk.text}")
+            for chunk in self._chunks
+        ]
 
-        scored: list[tuple[float, KnowledgeChunk]] = []
-        for chunk in self._chunks:
-            score = self._keyword_score(query_words, f"{chunk.heading_path}\n{chunk.text}")
-            if query_vec is not None and chunk.embedding is not None:
-                similarity = self._cosine(query_vec, chunk.embedding)
-                if similarity >= MIN_EMBEDDING_SIMILARITY:
-                    score += similarity * EMBEDDING_WEIGHT
-            if score >= MIN_SEARCH_SCORE:
-                scored.append((score, chunk))
+        for index, similarity in self._top_similarities(query):
+            # 게이트는 키워드 근거가 **없는** 조각에만 적용한다. 이미 근거가
+            # 있는 조각에서는 임베딩이 순위만 조정하면 된다.
+            if scores[index] > 0 or similarity >= NO_KEYWORD_GATE:
+                scores[index] += similarity * EMBEDDING_WEIGHT
 
+        scored = [
+            (score, chunk)
+            for score, chunk in zip(scores, self._chunks, strict=True)
+            if score >= MIN_SEARCH_SCORE
+        ]
         if not scored:
             return ""
 
@@ -383,6 +409,25 @@ class KnowledgeModule:
             used += cost
 
         return "\n\n".join(parts)
+
+    def _top_similarities(self, query: str) -> list[tuple[int, float]]:
+        """유사도 상위 `EMBEDDING_TOP_K`개의 (색인, 유사도).
+
+        절대값이 아니라 순위를 신호로 쓰는 이유는 실측이다. 모델은 순위를 잘
+        매기지만(top-1 75%) 유사도가 0.79~0.86에 압축되어, 어떤 임계값으로도
+        "관련된 것이 없다"를 판정하지 못한다 (SPEC-12 4.2).
+        """
+        query_vec = self._embed(query, QUERY)
+        if query_vec is None:
+            return []
+
+        pairs = [
+            (index, self._cosine(query_vec, chunk.embedding))
+            for index, chunk in enumerate(self._chunks)
+            if chunk.embedding is not None
+        ]
+        pairs.sort(key=lambda pair: -pair[1])
+        return pairs[:EMBEDDING_TOP_K]
 
     @staticmethod
     def _cosine(a, b) -> float:

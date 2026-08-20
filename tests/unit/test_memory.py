@@ -13,7 +13,7 @@ from src.modules.memory import MemoryEntry, MemoryModule
 # ---------------------------------------------------------------------------
 
 
-def _embedding(text: str) -> np.ndarray:
+def _embedding(text: str, _kind: str = "passage") -> np.ndarray:
     """Deterministic 8-dim normalized embedding for testing."""
     vec = np.array([hash(text) % 100 / 100.0 + 0.1] * 8, dtype=np.float32)
     return vec / np.linalg.norm(vec)

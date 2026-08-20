@@ -12,9 +12,11 @@ from src.agent.tools import ToolRegistry
 from src.analysis import ConflictClassifier, EmotionAnalyzer, MemoryExtractor
 from src.call_log import CallLogger
 from src.character_layout import CharacterLayout
+from src.embedding import Embedder
 from src.llm.client import Client
 from src.metrics import CallMeter
 from src.modules import (
+    EmbeddingCache,
     EmotionModule,
     FewShotModule,
     HistoryModule,
@@ -27,7 +29,7 @@ from src.modules import (
 from src.pricing import estimate_cost, load_price_table
 from src.prompts.engine import PromptEngine
 from src.trace import PipelineTrace
-from src.validity import provider_error_reason
+from src.validity import unusable_response_reason
 
 # 프로바이더가 거부를 돌려줬을 때 응답 생성을 다시 시도하는 횟수 (최초 호출 포함).
 # 거부는 결정론적이지 않아 재시도로 통과하는 경우가 많다. 평가 하네스도 같은 값을 쓴다.
@@ -66,6 +68,22 @@ MODULE_HEADERS = {
 }
 
 
+# 응답 하나의 출력 상한 (SPEC-12 REQ-21-29).
+#
+# 상한이 없던 동안 한 글자가 3,266회 반복된 130,755자·756초 응답이 나왔고,
+# 판정자는 그것에 만점을 줬다. 프롬프트로 "간결하게"를 지시해도 모델은 지키지
+# 않을 수 있고, 생성 후 잘라내는 것은 지연을 줄이지 못한다.
+#
+# 값의 근거는 운영 로그다(`logs/llm_calls.jsonl`, 응답 생성 1,122건).
+# 상한이 없던 상태의 실제 사용량이므로 "얼마가 필요한가"를 그대로 보여준다 —
+# 중앙 363, 99분위 867, 최대 1,354 토큰이다. 폭주는 131,072 토큰이었다.
+#
+# 평가 기록(319건)만 봤을 때는 최대가 597이어서 800으로 잡았는데, 그 표본은
+# 짧은 평가 질의에 치우쳐 있었다. 운영 로그로는 800이 정상 응답의 1.6%를
+# 자른다. 1,500은 관측 최대의 1.11배이고 아무것도 자르지 않는다 (SPEC-12 4.6).
+RESPONSE_MAX_OUTPUT_TOKENS = 1500
+
+
 @dataclass
 class _Turn:
     """턴 하나가 지나는 동안 Stage들이 공유하는 상태.
@@ -102,6 +120,7 @@ class CharacterOS:
         client: object | None = None,
         call_logger: CallLogger | None = None,
         prompt_engine: PromptEngine | None = None,
+        embedder: Embedder | None = None,
     ):
         """
         Args:
@@ -112,6 +131,8 @@ class CharacterOS:
             prompt_engine: 프롬프트 조립기. 생략하면 기본 예산과 보정 휴리스틱을
                 쓴다. 설정에서 만들려면 `src.prompts.engine.from_config`
                 (SPEC-11 REQ-11-6).
+            embedder: 임베딩 함수. 생략하면 기본 모델을 쓴다. 설정에서 만들려면
+                `src.embedding.from_config` (SPEC-12 REQ-21-2).
             memory_db_path, emotion_save_path, history_save_path, working_memory_path:
                 생략하면 `character_dir/state/` 아래로 파생한다. 캐릭터마다
                 상태가 분리되는 것이 기본 동작이다 (TASK-17). 명시하면 그
@@ -160,15 +181,25 @@ class CharacterOS:
         self.emotion = EmotionModule(
             save_path=emotion_save_path, debug=debug, debug_output=self._debug_output
         )
+        self._embedder = embedder or Embedder()
+        # Knowledge·FewShot 은 자산을 반복 임베딩하므로 캐시를 공유한다.
+        # Memory 는 자기 DB 에 벡터를 이미 영속화하므로 캐시를 쓰지 않는다
+        # (SPEC-12 결정 5).
+        self._embedding_cache = EmbeddingCache(
+            self._embedder,
+            str(layout.embedding_cache_path),
+            model_id=self._embedder.model_id,
+        )
         self.memory = MemoryModule(
             db_path=memory_db_path,
-            embedding_fn=self._embed,
+            embedding_fn=self._embedder,
             debug=debug,
             debug_output=self._debug_output,
+            model_id=self._embedder.model_id,
         )
-        self.knowledge = KnowledgeModule(knowledge_dir, embedding_fn=self._embed)
+        self.knowledge = KnowledgeModule(knowledge_dir, embedding_fn=self._embedding_cache)
         self.history = HistoryModule(save_path=history_save_path)
-        self.fewshot = FewShotModule(examples_dir, embedding_fn=self._embed)
+        self.fewshot = FewShotModule(examples_dir, embedding_fn=self._embedding_cache)
         self.working_memory = WorkingMemoryModule(save_path=working_memory_path)
         self.prompt_engine = prompt_engine or PromptEngine()
 
@@ -194,6 +225,14 @@ class CharacterOS:
             module="orchestrator",
         )
 
+        hits, misses = self._embedding_cache.stats
+        pruned = self._embedding_cache.prune_unused()
+        self._log(
+            f"[모듈 로드] 임베딩 캐시: 재사용 {hits}개 · 신규 {misses}개 · 정리 {pruned}개 "
+            f"({self._embedder.model_id})",
+            module="orchestrator",
+        )
+
         # 정적 자산의 로드 문제를 드러낸다 (REQ-06-1).
         # 조용히 넘기면 프롬프트 품질이 원인 불명으로 떨어진다.
         self._report_asset_issues()
@@ -208,6 +247,16 @@ class CharacterOS:
         self._log(
             f"[모듈 로드] memory 완료: {len(self.memory._memories)}개 기억", module="orchestrator"
         )
+        if self.memory.reembedded:
+            self._log(
+                f"[모듈 로드] 임베딩 모델이 바뀌어 기억 {self.memory.reembedded}개를 "
+                f"다시 임베딩했다",
+                module="orchestrator",
+            )
+        for issue in self.memory.load_issues:
+            self._log(f"[모듈 로드] {issue.describe()}", module="orchestrator")
+            if not issue.expected:
+                self._output(f"[경고] {issue.describe()}")
 
         self._log("[모듈 로드] history 로드 중...", module="orchestrator")
         self.history.load()
@@ -294,6 +343,7 @@ class CharacterOS:
         issues = [
             *self.knowledge.load_issues,
             *self.fewshot.load_issues,
+            *self._embedding_cache.issues,
         ]
         if not issues:
             return
@@ -344,16 +394,6 @@ class CharacterOS:
                 self._debug_output(json.dumps(data, ensure_ascii=False, indent=2))
             else:
                 self._debug_output(str(data))
-
-    _embedding_model = None  # 클래스 레벨 캐시
-
-    def _embed(self, text: str):
-        """임베딩 함수 (sentence-transformers 사용)."""
-        if CharacterOS._embedding_model is None:
-            from sentence_transformers import SentenceTransformer
-
-            CharacterOS._embedding_model = SentenceTransformer("all-MiniLM-L6-v2")
-        return CharacterOS._embedding_model.encode(text, normalize_embeddings=True)
 
     def _think(self, user_input: str) -> ThoughtBundle:
         """Stage 1: 뇌 — 무엇이 필요한지 스스로 판단하고 근거를 모은다.
@@ -430,16 +470,19 @@ class CharacterOS:
                     tools=[],
                     use_stream=False,
                     mute=True,
+                    max_tokens=RESPONSE_MAX_OUTPUT_TOKENS,
                 )
-                reason = provider_error_reason(result.content)
+                # 프로바이더 거부와 디코딩 폭주를 같은 문에서 막는다. 둘 다
+                # 캐릭터 발화가 아니고, 저장되면 이후 턴까지 오염시킨다.
+                reason = unusable_response_reason(result.content)
                 if reason is None:
                     return result.content
                 self._log(
-                    f"프로바이더 거부 ({attempt + 1}/{MAX_RESPONSE_ATTEMPTS}): {reason}",
+                    f"사용 불가 응답 ({attempt + 1}/{MAX_RESPONSE_ATTEMPTS}): {reason}",
                     module="response",
                 )
 
-            raise ProviderRefusalError(reason or "프로바이더 거부")
+            raise ProviderRefusalError(reason or "사용 불가 응답")
 
         # 초안 생성
         self._log("LLM 호출 시작 (초안)...", module="response")

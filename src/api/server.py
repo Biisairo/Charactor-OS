@@ -35,6 +35,7 @@ from src.api.worker import CharacterWorker
 from src.call_log import from_config as call_logger_from_config
 from src.character_os import CharacterOS
 from src.config import load_config
+from src.embedding import from_config as embedder_from_config
 from src.prompts.engine import from_config as prompt_engine_from_config
 
 __all__ = ["app", "lifespan", "CharacterWorker", "SAFE_FILENAME", "SAFE_SEGMENT", "safe_child"]
@@ -60,6 +61,7 @@ async def lifespan(app: FastAPI):
         trace=True,
         call_logger=call_logger_from_config(config),
         prompt_engine=prompt_engine_from_config(config),
+        embedder=embedder_from_config(config),
     )
     deps.set_worker(CharacterWorker(cos))
     yield

@@ -2,18 +2,24 @@
 
     PYTHONPATH=. uv run python -m eval.fewshot_probe
     PYTHONPATH=. uv run python -m eval.fewshot_probe --json out.json
+    PYTHONPATH=. uv run python -m eval.fewshot_probe --model all-MiniLM-L6-v2
 
-LLM API 키가 필요 없다. 임베딩 모델은 로컬(`all-MiniLM-L6-v2`)에서 돈다.
+LLM API 키가 필요 없다. 임베딩 모델은 로컬에서 돌며 `config.yaml`을 따른다.
 기본 테스트 스위트에는 넣지 않는다 — 모델 로드에 수 초가 걸리고, 정밀도는
 합격/불합격이 아니라 **추적할 수치**이기 때문이다.
 
 무엇을 재는가:
 
-    tag 정확도   검색된 예시가 기대한 태그 그룹에서 나왔는가
-    무응답률     아무 예시도 반환하지 않은 비율
+    tag 정확도       검색된 예시가 기대한 태그 그룹에서 나왔는가
+    무응답률         아무 예시도 반환하지 않은 비율
+    평가 질의 유실    골든 데이터셋 질의가 예시를 통째로 잃는 비율
 
 `expected_tag: null`(unrelated)인 질의는 **아무것도 반환하지 않는 것이 정답**이다.
-관련 없는 예시를 프롬프트에 넣으면 응답 품질이 조용히 떨어진다.
+
+**마지막 지표를 반드시 함께 본다.** 이 프로브의 질의는 태그 어휘가 잘 걸리는
+것들에 치우쳐 있어, 정확도만 보고 임계값을 올리면 실제 대화에서 예시가 사라진다.
+실제로 임계를 0.29→0.35로 올려 정확도를 16.7%p 올렸다가 평가 점수 0.317을
+잃었다 — 그때 평가 질의 40건 중 11건이 예시를 잃고 있었다 (SPEC-12 4.5).
 """
 
 from __future__ import annotations
@@ -30,6 +36,7 @@ from src.character_layout import CharacterLayout
 from src.modules.fewshot import FewShotModule
 
 PROBE_PATH = Path(__file__).parent / "datasets" / "fewshot_probe.yaml"
+DATASETS_DIR = Path(__file__).parent / "datasets"
 CHARACTERS_DIR = Path("characters")
 
 
@@ -61,11 +68,46 @@ def load_probes(path: Path = PROBE_PATH) -> list[Probe]:
     ]
 
 
-def _embedding_fn():
-    from sentence_transformers import SentenceTransformer
+def _embedding_fn(model: str | None = None):
+    """임베딩 함수. 용도(`kind`)를 받는 새 규약을 따른다 (SPEC-12 REQ-21-3).
 
-    model = SentenceTransformer("all-MiniLM-L6-v2")
-    return lambda text: model.encode(text, normalize_embeddings=True)
+    모델을 지정하지 않으면 `config.yaml`의 설정을 쓴다 — 프로브가 런타임과
+    다른 모델로 재면 측정이 근거가 되지 못한다 (SPEC-11 REQ-11-11과 같은 원칙).
+    """
+    from src.config import load_config
+    from src.embedding import Embedder, EmbeddingConfig
+    from src.embedding import from_config as embedder_from_config
+
+    if model:
+        return Embedder(EmbeddingConfig(model=model))
+    return embedder_from_config(load_config())
+
+
+def eval_query_loss(model: str | None = None) -> dict:
+    """골든 데이터셋 질의가 예시를 잃는 비율 (SPEC-12 4.5).
+
+    프로브 정확도와 함께 보아야 하는 짝 지표다. 임계값을 올리면 정확도는
+    오르고 이 값도 함께 오른다 — 그 교환이 이득인지 아닌지를 실제 평가 점수로
+    판단해야 한다.
+    """
+    embed = _embedding_fn(model)
+    empty: list[str] = []
+    total = 0
+    for dataset in sorted(DATASETS_DIR.glob("*.yaml")):
+        character = dataset.stem
+        if character.endswith("_probe"):
+            continue
+        layout = CharacterLayout.of(CHARACTERS_DIR / character)
+        if not layout.examples_dir.exists():
+            continue
+        module = FewShotModule(str(layout.examples_dir), embedding_fn=embed)
+        module.load_all()
+        payload = yaml.safe_load(dataset.read_text(encoding="utf-8"))
+        for case in payload.get("cases", []):
+            total += 1
+            if not module.search(case["input"]):
+                empty.append(f"{character}/{case['id']}")
+    return {"total": total, "empty": empty}
 
 
 def _tag_of(module: FewShotModule, example) -> str | None:
@@ -76,8 +118,8 @@ def _tag_of(module: FewShotModule, example) -> str | None:
     return None
 
 
-def run(probes: list[Probe]) -> list[Outcome]:
-    embed = _embedding_fn()
+def run(probes: list[Probe], model: str | None = None) -> list[Outcome]:
+    embed = _embedding_fn(model)
     modules: dict[str, FewShotModule] = {}
     outcomes: list[Outcome] = []
 
@@ -89,6 +131,9 @@ def run(probes: list[Probe]) -> list[Outcome]:
             modules[probe.character] = module
 
         module = modules[probe.character]
+        for issue in module.load_issues:
+            if not issue.expected:
+                raise SystemExit(f"임베딩이 동작하지 않는다 — {issue.describe()}")
         hits = module.search(probe.query, top_k=1)
         returned = _tag_of(module, hits[0]) if hits else None
         outcomes.append(
@@ -131,10 +176,23 @@ def format_report(outcomes: list[Outcome], summary: dict) -> str:
     for band, stat in summary["by_band"].items():
         lines.append(f"  {band:<12}{stat['accuracy']:.1%}  ({stat['count']}건)")
     lines.append(f"\n무응답 {summary['empty_returns']}건")
+
+    loss = summary.get("eval_loss")
+    if loss:
+        n = len(loss["empty"])
+        lines.append(
+            f"\n평가 질의 유실  {n}/{loss['total']}건"
+            f"{' — ' + ', '.join(loss['empty']) if loss['empty'] else ''}"
+        )
+        if n:
+            lines.append(
+                "  이 값이 0이 아니면 실제 대화에서 예시가 사라진다. "
+                "정확도가 올라도 품질은 떨어질 수 있다 (SPEC-12 4.5)."
+            )
     return "\n".join(lines)
 
 
-def sweep(probes: list[Probe], thresholds: list[float]) -> str:
+def sweep(probes: list[Probe], thresholds: list[float], model: str | None = None) -> str:
     """임계값을 바꿔가며 정확도를 잰다 — 값을 눈대중으로 고르지 않기 위함이다."""
     from src.modules import fewshot as fewshot_module
 
@@ -147,7 +205,7 @@ def sweep(probes: list[Probe], thresholds: list[float]) -> str:
     try:
         for threshold in thresholds:
             fewshot_module.MIN_FEWSHOT_SCORE = threshold
-            summary = summarize(run(probes))
+            summary = summarize(run(probes, model))
             bands = summary["by_band"]
             lines.append(
                 f"{threshold:<10.2f}{summary['accuracy']:<10.1%}"
@@ -166,6 +224,10 @@ def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(description="few-shot 검색 정밀도 측정")
     parser.add_argument("--json", help="결과를 JSON으로 저장할 경로")
     parser.add_argument(
+        "--model",
+        help="임베딩 모델을 지정한다 (생략하면 config.yaml). 모델 간 비교에 쓴다",
+    )
+    parser.add_argument(
         "--sweep",
         action="store_true",
         help="임계값을 바꿔가며 정확도를 비교한다 (MIN_FEWSHOT_SCORE 선택 근거)",
@@ -175,11 +237,12 @@ def main(argv: list[str] | None = None) -> int:
     probes = load_probes()
 
     if args.sweep:
-        print(sweep(probes, [0.0, 0.20, 0.25, 0.29, 0.32, 0.35, 0.40, 0.45]))
+        print(sweep(probes, [0.0, 0.20, 0.25, 0.29, 0.32, 0.35, 0.40, 0.45], args.model))
         return 0
 
-    outcomes = run(probes)
+    outcomes = run(probes, args.model)
     summary = summarize(outcomes)
+    summary["eval_loss"] = eval_query_loss(args.model)
     print(format_report(outcomes, summary))
 
     if args.json:

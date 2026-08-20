@@ -8,6 +8,8 @@ from pathlib import Path
 
 import numpy as np
 
+from src.embedding import PASSAGE, QUERY
+from src.modules.asset_issue import AssetLoadIssue
 from src.prompts.untrusted import MEMORY, QUOTE_NOTICE, quote
 
 
@@ -56,12 +58,36 @@ class MemoryModule:
         embedding_fn,
         debug: bool = False,
         debug_output: Callable[[str], None] | None = None,
+        model_id: str = "",
     ):
+        """
+        Args:
+            embedding_fn: `(text, kind)` 를 받는 임베딩 함수.
+            model_id: 벡터를 만든 모델의 식별자 (SPEC-12 REQ-21-20). DB 에
+                기록된 값과 다르면 로드 시 전량 재임베딩한다 — 좌표계가 다른
+                벡터를 섞으면 오류 없이 무의미한 점수가 나온다.
+        """
         self._db_path = Path(db_path)
         self._embedding_fn = embedding_fn
+        self._model_id = model_id
         self._memories: dict[str, MemoryEntry] = {}
+        self._reembedded = 0
+        self._load_issues: list[AssetLoadIssue] = []
         self._debug = debug
         self._debug_output = debug_output or (lambda msg: None)
+
+    @property
+    def reembedded(self) -> int:
+        """마지막 `load()`에서 다시 임베딩한 기억 수 (REQ-21-22).
+
+        조용히 일어나면 안 된다. 오케스트레이터가 읽어 로그로 올린다.
+        """
+        return self._reembedded
+
+    @property
+    def load_issues(self) -> list[AssetLoadIssue]:
+        """마지막 `load()`에서 생긴 문제들."""
+        return list(self._load_issues)
 
     def _log_debug(self, message: str, data=None) -> None:
         if not self._debug:
@@ -75,8 +101,16 @@ class MemoryModule:
                 self._debug_output(str(data))
 
     def load(self) -> None:
-        """SQLite에서 기억을 로드한다."""
+        """SQLite에서 기억을 로드한다.
+
+        벡터를 만든 모델이 지금 쓰는 모델과 다르면 전량 재임베딩한다 —
+        좌표계가 다른 벡터를 섞으면 오류 없이 무의미한 점수가 나온다
+        (SPEC-12 REQ-21-21).
+        """
         self._log_debug(f"load() 호출 <- {self._db_path}")
+        self._reembedded = 0
+        self._load_issues = []
+
         if not self._db_path.exists():
             self._log_debug("파일 없음, 로드 스킵")
             return
@@ -99,8 +133,60 @@ class MemoryModule:
                 )
                 self._memories[entry.id] = entry
             self._log_debug(f"로드 완료: {len(self._memories)}개 기억")
+            stored_model = self._stored_model(conn)
         finally:
             conn.close()
+
+        if self._memories and stored_model != self._model_id:
+            self._reembed_all(stored_model)
+
+    def _stored_model(self, conn: sqlite3.Connection) -> str:
+        """이 DB 의 벡터를 만든 모델. 기록이 없으면 낡은 것으로 본다.
+
+        기존 DB 에는 `meta` 테이블이 아예 없다. 무엇으로 만들었는지 알 수 없는
+        벡터를 그대로 쓰는 것이 가장 위험하므로, 빈 값으로 돌려 재임베딩을
+        유도한다 (SPEC-12 REQ-21-20).
+        """
+        try:
+            row = conn.execute(
+                "SELECT value FROM meta WHERE key = 'embedding_model'"
+            ).fetchone()
+        except sqlite3.Error:
+            return ""
+        return str(row["value"]) if row else ""
+
+    def _reembed_all(self, stored_model: str) -> None:
+        """저장된 원문으로 벡터를 다시 만들어 덮어쓴다 (REQ-21-21).
+
+        모델 식별자는 `save()`가 기록한다 — 즉 **재임베딩이 끝난 뒤** 커밋된다.
+        중간에 끊기면 식별자가 남지 않아 다음 로드에서 다시 시도한다
+        (SPEC-12 리스크 HIGH).
+        """
+        self._log_debug(f"임베딩 모델 변경 감지: {stored_model!r} -> {self._model_id!r}")
+
+        try:
+            for entry in self._memories.values():
+                entry.embedding = self._embedding_fn(entry.content, PASSAGE)
+        except Exception as e:
+            # 좌표계가 다른 벡터로 검색을 계속하면 점수가 조용히 무의미해진다.
+            # 검색에서 빼고 드러낸다 (REQ-21-23).
+            count = len(self._memories)
+            self._memories = {}
+            self._load_issues.append(
+                AssetLoadIssue(
+                    filename=f"(기억 재임베딩) {self._db_path}",
+                    reason=(
+                        f"{type(e).__name__}: {e} — 기억 {count}개를 다시 임베딩하지 못했다. "
+                        f"이번 세션에서는 기억 검색을 하지 않는다"
+                    ),
+                    expected=False,
+                )
+            )
+            return
+
+        self._reembedded = len(self._memories)
+        self.save()
+        self._log_debug(f"재임베딩 완료: {self._reembedded}개")
 
     def save(self) -> None:
         """기억을 SQLite에 저장한다."""
@@ -140,6 +226,13 @@ class MemoryModule:
                         json.dumps(entry.metadata, ensure_ascii=False),
                     ),
                 )
+            conn.execute(
+                "CREATE TABLE IF NOT EXISTS meta (key TEXT PRIMARY KEY, value TEXT NOT NULL)"
+            )
+            conn.execute(
+                "INSERT OR REPLACE INTO meta (key, value) VALUES ('embedding_model', ?)",
+                (self._model_id,),
+            )
             conn.commit()
             self._log_debug(f"저장 완료: {len(self._memories)}개 기억")
         finally:
@@ -179,7 +272,7 @@ class MemoryModule:
             self._log_debug("기억 없음, 빈 결과 반환")
             return []
 
-        query_vec = self._embedding_fn(query)
+        query_vec = self._embedding_fn(query, QUERY)
         scores: list[tuple[str, float]] = []
 
         for entry in self._memories.values():
@@ -291,7 +384,7 @@ class MemoryModule:
         if not candidate.content:
             return
 
-        embedding = self._embedding_fn(candidate.content)
+        embedding = self._embedding_fn(candidate.content, PASSAGE)
         nearest, score = self._nearest(embedding)
 
         # 충분히 가까운 기억이 없으면 판정을 물을 이유가 없다. 호출을 아낀다.

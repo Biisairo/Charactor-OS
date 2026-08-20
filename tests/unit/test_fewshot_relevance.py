@@ -24,8 +24,19 @@ from src.modules.fewshot import MIN_FEWSHOT_SCORE, FewShotModule
 # 질의와 예시의 유사도를 테스트가 직접 정한다.
 _SIMILARITY: dict[str, float] = {}
 
+# 현재 임베딩 모델의 **실측** 유사도 대역 (SPEC-12 4.2 · 4.5).
+#
+# 이 두 상수가 이 파일의 핵심이다. 예전에는 잡음을 0.5로 박아두었고, 그것이
+# 낡은 모델(`all-MiniLM-L6-v2`)의 분포였다. 모델을 바꾸자 무관한 질의가 0.84를
+# 받게 되면서 임계값이 무력해졌는데 **테스트는 계속 통과했다** (SPEC-12 P-13).
+#
+# 모델을 바꾸면 이 값을 `eval/embedding_probe.py`로 다시 재야 한다. 값이 실제
+# 분포와 어긋나면 이 파일의 테스트는 아무것도 지키지 못한다.
+NOISE_SIMILARITY = 0.84
+HIT_SIMILARITY = 0.95
 
-def _embedding(text: str) -> np.ndarray:
+
+def _embedding(text: str, _kind: str = "passage") -> np.ndarray:
     """단위 벡터를 만들되, 지정된 유사도가 나오도록 각도를 잡는다."""
     similarity = _SIMILARITY.get(text, 0.0)
     return np.array([similarity, np.sqrt(max(0.0, 1.0 - similarity**2))], dtype=np.float32)
@@ -59,25 +70,59 @@ def _module(directory, *, with_embedding: bool = True) -> FewShotModule:
 
 
 class TestRelevanceThreshold:
-    def test_low_relevance_returns_nothing(self, tmp_path):
-        """점수가 0은 아니지만 낮은 경우 — 예전에는 이것도 반환했다."""
-        _write_group(tmp_path, "인사", "안녕")
-        _SIMILARITY["안녕"] = 0.5  # 0.5 * 0.4 = 0.20 < 0.29
+    def test_noise_band_currently_passes_the_threshold(self, tmp_path):
+        """**현재 임계값은 무관 대역을 막지 못한다.** 그 사실을 고정한다.
 
-        assert _module(tmp_path).search("__query__") == []
+        예전 이 테스트는 잡음을 0.5로 박아두고 "무관하면 걸러진다"를 주장했다.
+        낡은 모델의 분포였고, 모델을 바꾼 뒤로는 사실이 아니다.
 
-    def test_high_relevance_still_returns(self, tmp_path):
+        임계를 올려 막아 봤지만 실제 평가 점수가 4.867 → 4.550 으로 떨어졌다 —
+        평가 질의 40건 중 11건이 예시를 잃었기 때문이다 (SPEC-12 4.5). 무관한
+        예시보다 **예시가 없는 것이 더 해롭다**는 것이 실측이다.
+
+        그래서 이 테스트는 "막힌다"가 아니라 **막히지 않는다는 현재 상태**를
+        적어 둔다. 주장과 실제가 어긋난 테스트가 통과하는 것이 더 나쁘다.
+        """
         _write_group(tmp_path, "인사", "안녕")
-        _SIMILARITY["안녕"] = 0.95  # 0.95 * 0.4 = 0.38 > 0.29
+        _SIMILARITY["안녕"] = NOISE_SIMILARITY
+
+        assert _module(tmp_path).search("__query__") != []
+
+    def test_hit_band_similarity_still_returns(self, tmp_path):
+        _write_group(tmp_path, "인사", "안녕")
+        _SIMILARITY["안녕"] = HIT_SIMILARITY
 
         assert len(_module(tmp_path).search("__query__")) == 1
 
-    def test_to_prompt_is_empty_when_nothing_is_relevant(self, tmp_path):
-        """프롬프트에 무관한 예시 블록이 붙지 않아야 한다."""
+    def test_hit_band_clears_the_threshold(self, tmp_path):
+        """적중 대역은 임계를 넘어야 한다. 이쪽은 반드시 지켜져야 하는 방향이다.
+
+        잡음 대역까지 함께 막으려 하면 실제 질의가 예시를 잃는다 (SPEC-12 4.5).
+        """
+        from src.modules.fewshot import EMBEDDING_WEIGHT
+
+        assert HIT_SIMILARITY * EMBEDDING_WEIGHT >= MIN_FEWSHOT_SCORE
+
+    def test_to_prompt_is_empty_when_score_is_truly_low(self, tmp_path):
+        """점수가 임계 아래면 프롬프트에 예시 블록이 붙지 않는다.
+
+        임베딩이 잡음 대역까지 밀어 올리지 못하는 경우 — 예시 임베딩이 없는
+        경로(임베딩 실패)나 유사도가 실제로 낮은 경우가 이에 해당한다.
+        """
         _write_group(tmp_path, "인사", "안녕")
-        _SIMILARITY["안녕"] = 0.5
+        _SIMILARITY["안녕"] = 0.1
 
         assert _module(tmp_path).to_prompt("__query__") == ""
+
+    def test_tag_hit_survives_the_threshold(self, tmp_path):
+        """태그가 걸린 정상 질의는 임계값에 걸리지 않아야 한다.
+
+        임계값을 올리면 무관한 예시를 막는 대신 정상 질의를 자를 위험이 생긴다.
+        """
+        _write_group(tmp_path, "인사", "안녕")
+        _SIMILARITY["안녕"] = NOISE_SIMILARITY
+
+        assert _module(tmp_path).search("안녕 반가워")
 
     def test_fallback_without_embedding_is_not_further_degraded(self, tmp_path):
         """임계값은 임베딩이 있는 점수 체계에서 보정했다.

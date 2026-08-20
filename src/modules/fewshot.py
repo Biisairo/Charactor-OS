@@ -3,16 +3,22 @@ from pathlib import Path
 
 import yaml
 
+from src.embedding import PASSAGE, QUERY, EmbeddingKind
 from src.modules.asset_issue import AssetLoadIssue
 
 
 @dataclass
 class FewShotExample:
-    """Few-shot 예시 하나."""
+    """Few-shot 예시 하나.
+
+    `embedding`은 `load_all()`에서 채워진다. 검색 경로에서 계산하면 예시가
+    늘수록 검색이 느려진다 (SPEC-12 P-5).
+    """
 
     user: str
     character: str
     emotion_state: list[str] = field(default_factory=list)
+    embedding: object = field(default=None, compare=False)
 
 
 @dataclass
@@ -37,7 +43,28 @@ class FewShotGroup:
 # 값은 `eval/fewshot_probe.py --sweep`의 실측에서 골랐다. 관련 질의와 무관
 # 질의의 점수 구간이 겹치는 영역이 있어 깔끔한 분리선은 없다 — 무관한 예시를
 # 넣지 않는 것을 우선한 지점이다.
+#
+# **이 값은 임베딩 모델의 점수 분포에 매여 있다.** 모델을 바꾸자 무관한 질의의
+# 임베딩 점수가 0.84로 올라 임계를 그대로 넘겼다 — 프로브의 무관 차단율이
+# 100%에서 0%로 떨어졌다 (SPEC-12 P-12).
+#
+# 그래서 0.35로 올려 봤고, **실제 평가에서 품질이 떨어졌다.** 차단율은 100%로
+# 회복됐지만 평가 질의 40건 중 11건이 예시를 통째로 잃었고, 점수가 4.867 →
+# 4.550으로 내려갔다. 잃은 카테고리가 무응답이 난 케이스와 정확히 일치한다
+# (SPEC-12 4.5).
+#
+# 무관한 예시가 실리는 것보다 **예시가 없는 것이 더 해롭다.** 예시는 주제가
+# 달라도 말투의 본보기 노릇을 하기 때문이다. 그래서 0.29를 유지한다 —
+# 프로브 지표를 고치려고 실제 품질을 내주지 않는다.
 MIN_FEWSHOT_SCORE = 0.29
+
+# 점수 배분. 임베딩이 있을 때 쓰는 세 신호의 몫이다.
+#
+# 하드코딩되어 있던 값을 상수로 뽑았다 — 임베딩 모델을 바꾸면 이 비율을
+# 다시 재야 하는데, 식 안에 박혀 있으면 스윕으로 잴 수가 없다 (SPEC-12).
+TAG_WEIGHT = 0.4
+EMBEDDING_WEIGHT = 0.4
+EMOTION_WEIGHT = 0.2
 
 # 트리거 어휘가 이 개수만큼 걸리면 태그 점수를 최대로 본다.
 #
@@ -75,7 +102,8 @@ class FewShotModule:
 
         Args:
             examples_dir: 예시 YAML 파일이 있는 디렉토리 경로
-            embedding_fn: 임베딩 함수 (선택, 없으면 키워드 매칭만 사용)
+            embedding_fn: `(text, kind)` 를 받는 임베딩 함수
+                (선택, 없으면 키워드 매칭만 사용)
         """
         self._dir = Path(examples_dir)
         self._embedding_fn = embedding_fn
@@ -92,6 +120,7 @@ class FewShotModule:
         """examples/ 디렉토리의 모든 YAML을 로드한다."""
         self._groups = []
         self._load_issues = []
+        self._embedding_failed = False
 
         if not self._dir.exists():
             return
@@ -99,6 +128,16 @@ class FewShotModule:
         for file_path in sorted(self._dir.iterdir()):
             if file_path.is_file() and file_path.suffix.lower() in {".yaml", ".yml"}:
                 self._load_file(file_path)
+
+        self._embed_examples()
+
+    def _embed_examples(self) -> None:
+        """예시 임베딩을 로드 시점에 한 번 만든다 (REQ-21-17)."""
+        if self._embedding_fn is None:
+            return
+        for group in self._groups:
+            for example in group.examples:
+                example.embedding = self._embed(example.user, PASSAGE)
 
     def _load_file(self, path: Path) -> None:
         """단일 YAML 파일을 로드하여 FewShotGroup으로 변환한다."""
@@ -166,12 +205,19 @@ class FewShotModule:
         """관련성 기반으로 few-shot 예시를 검색한다.
 
         점수 = 태그 키워드 매칭(0.4) + 임베딩 유사도(0.4) + 감정 매칭(0.2)
+
+        예시 임베딩은 `load_all()`에서 이미 만들어져 있다. 예전에는 검색 한 번에
+        예시마다 임베딩을 계산했고, 질의 임베딩까지 그 루프 안에서 다시 만들었다
+        (SPEC-12 P-5). 예시가 늘수록 검색이 느려지는 구조였다.
         """
         if not self._groups:
             return []
 
+        import numpy as np
+
         emotions = emotions or {}
         query_lower = query.lower()
+        query_vec = self._embed(query, QUERY) if self._embedding_fn else None
 
         # 각 example에 점수 부여
         scored: list[tuple[float, FewShotExample]] = []
@@ -191,32 +237,18 @@ class FewShotModule:
                     matching = sum(1 for e in example.emotion_state if e in emotions)
                     emotion_score = matching / max(len(example.emotion_state), 1)
 
-                # 임베딩 유사도 (있으면)
+                # 임베딩 유사도 (있으면). 음수는 제거한다.
                 embedding_score = 0.0
-                if self._embedding_fn:
-                    try:
-                        import numpy as np
-
-                        query_vec = self._embedding_fn(query)
-                        example_vec = self._embedding_fn(example.user)
-                        embedding_score = float(np.dot(query_vec, example_vec))
-                        embedding_score = max(0.0, embedding_score)  # 음수 제거
-                    except Exception as e:
-                        # 임베딩이 죽으면 검색이 태그 매칭으로 조용히 퇴화한다.
-                        # 검색마다 기록하면 로그가 넘치므로 처음 1회만 남긴다.
-                        if not self._embedding_failed:
-                            self._embedding_failed = True
-                            self._load_issues.append(
-                                AssetLoadIssue(
-                                    filename="(임베딩)",
-                                    reason=f"{type(e).__name__}: {e} — 태그 매칭으로 퇴화",
-                                    expected=False,
-                                )
-                            )
+                if query_vec is not None and example.embedding is not None:
+                    embedding_score = max(0.0, float(np.dot(query_vec, example.embedding)))
 
                 # 최종 점수
                 if self._embedding_fn:
-                    total = tag_score * 0.4 + embedding_score * 0.4 + emotion_score * 0.2
+                    total = (
+                        tag_score * TAG_WEIGHT
+                        + embedding_score * EMBEDDING_WEIGHT
+                        + emotion_score * EMOTION_WEIGHT
+                    )
                 else:
                     # 임베딩 없으면 태그에 더 높은 가중치
                     total = tag_score * 0.7 + emotion_score * 0.3
@@ -247,6 +279,27 @@ class FewShotModule:
                 break
 
         return results
+
+    def _embed(self, text: str, kind: EmbeddingKind):
+        """임베딩. 실패는 한 번만 기록하고 태그 매칭으로 계속한다.
+
+        검색마다 기록하면 로그가 넘치므로 처음 1회만 남긴다 (REQ-06-1).
+        """
+        if self._embedding_fn is None:
+            return None
+        try:
+            return self._embedding_fn(text, kind)
+        except Exception as e:
+            if not self._embedding_failed:
+                self._embedding_failed = True
+                self._load_issues.append(
+                    AssetLoadIssue(
+                        filename="(임베딩)",
+                        reason=f"{type(e).__name__}: {e} — 태그 매칭으로 퇴화",
+                        expected=False,
+                    )
+                )
+            return None
 
     def to_prompt(
         self,
@@ -285,11 +338,16 @@ class FewShotModule:
         character: str,
         emotion_state: list[str] | None = None,
     ) -> None:
-        """새 예시를 추가한다 (런타임)."""
+        """새 예시를 추가한다 (런타임).
+
+        임베딩을 함께 만든다 — 없으면 이 예시만 임베딩 점수 0을 받아 검색에서
+        조용히 밀린다.
+        """
         new_example = FewShotExample(
             user=user,
             character=character,
             emotion_state=emotion_state or [],
+            embedding=self._embed(user, PASSAGE),
         )
 
         # 기존 그룹에 추가 또는 새 그룹 생성

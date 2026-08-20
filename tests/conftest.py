@@ -16,6 +16,7 @@ from src.agent.tools import FINISH_TOOL
 from src.call_log import CallLogger
 from src.character_layout import CharacterLayout
 from src.character_os import CharacterOS
+from src.embedding import Embedder
 from src.llm.client import ToolCallPart, TrimmedMessage
 
 # ---------------------------------------------------------------------------
@@ -74,7 +75,12 @@ class MockClient:
             "use_stream": use_stream,
             "mute": mute,
             "response_format": response_format,
+            # 출력 상한은 폭주를 구조적으로 막는 장치다. 지정 여부를 테스트가
+            # 볼 수 있어야 한다 (SPEC-12 REQ-21-29).
+            "max_tokens": max_tokens,
         }
+        self.max_tokens_seen: list[int | None] = getattr(self, "max_tokens_seen", [])
+        self.max_tokens_seen.append(max_tokens)
 
         content = self._response.content
         if token_callback and use_stream:
@@ -160,13 +166,21 @@ def deterministic_embed(text: str) -> np.ndarray:
 
 @pytest.fixture(autouse=True)
 def patch_embedding(monkeypatch):
-    """모든 테스트에서 SentenceTransformer 로드를 우회한다."""
-    stub = type(
-        "EmbeddingStub",
-        (),
-        {"encode": staticmethod(lambda text, normalize_embeddings=True: deterministic_embed(text))},
-    )()
-    monkeypatch.setattr(CharacterOS, "_embedding_model", stub)
+    """모든 테스트에서 SentenceTransformer 로드를 우회한다.
+
+    인코더만 갈아끼운다 — 프리픽스 적용과 용도 검증(SPEC-12 REQ-21-3)은 실물
+    `Embedder`가 그대로 수행해야 파이프라인 테스트가 의미를 갖는다.
+    """
+
+    def encode(text: str, normalize_embeddings: bool = True) -> np.ndarray:
+        return deterministic_embed(text)
+
+    def encoder(self):
+        # 테스트가 직접 주입한 인코더가 있으면 그것이 이긴다 — 프리픽스와 용도를
+        # 검증하는 테스트가 이 픽스처에 가려지면 안 된다.
+        return self._encode if self._encode is not None else encode
+
+    monkeypatch.setattr(Embedder, "_encoder", encoder)
 
 
 # ---------------------------------------------------------------------------
@@ -342,6 +356,7 @@ class PipelineMockClient(MockClient):
             mute=mute,
             response_format=response_format,
             token_callback=token_callback,
+            max_tokens=max_tokens,
         )
 
 

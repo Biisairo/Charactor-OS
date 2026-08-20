@@ -1,3 +1,4 @@
+from .embedding_cache import EmbeddingCache
 from .emotion import EmotionModule
 from .fewshot import FewShotModule
 from .history import HistoryModule
@@ -17,4 +18,5 @@ __all__ = [
     "ReflectionReviewer",
     "WorkingMemoryModule",
     "WorkingMemoryItem",
+    "EmbeddingCache",
 ]

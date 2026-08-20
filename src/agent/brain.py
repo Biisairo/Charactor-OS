@@ -16,7 +16,7 @@ from collections.abc import Callable
 
 from src.agent.schemas import NewThought, ResponseStrategy, ThoughtBundle, ToolCallRecord
 from src.agent.tools import FINISH_TOOL, ToolArgumentError, ToolRegistry, UnknownToolError
-from src.validity import provider_error_reason
+from src.validity import unusable_response_reason
 
 MAX_ITERATIONS = 5
 
@@ -109,7 +109,9 @@ class ReActBrain:
             result = self._call(messages)
 
             if not result.tool_calls:
-                reason = provider_error_reason(result.content)
+                # 거부와 디코딩 폭주를 함께 막는다. 뇌가 무너진 텍스트를 내면
+                # 재촉 메시지에 그것이 실려 다음 반복까지 오염된다.
+                reason = unusable_response_reason(result.content)
                 if reason:
                     raise BrainError("refusal", reason)
                 self._log(f"[{iteration}] 도구 없이 응답 — 재촉")

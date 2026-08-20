@@ -13,8 +13,9 @@ from eval.dataset import GoldenCase, GoldenDataset
 from eval.scoring import CaseScore, Summary, aggregate
 from src.character_os import CharacterOS
 from src.config import load_config
+from src.embedding import from_config as embedder_from_config
 from src.prompts.engine import from_config as prompt_engine_from_config
-from src.validity import provider_error_reason
+from src.validity import unusable_response_reason
 
 RESULTS_DIR = Path(__file__).parent / "results"
 
@@ -175,6 +176,7 @@ def _generate_response(
         no_review=no_review,
         # 평가만 다른 자로 재면 측정이 런타임과 어긋난다 (SPEC-11 REQ-11-11).
         prompt_engine=prompt_engine_from_config(load_config()),
+        embedder=embedder_from_config(load_config()),
         **kwargs,
     )
 
@@ -191,8 +193,9 @@ def _generate_response(
     if not response:
         return "", "응답 생성 실패", latency_ms
 
-    # 프로바이더 거부 응답을 채점하면 인프라 문제가 품질 점수로 둔갑한다
-    invalid = provider_error_reason(response)
+    # 프로바이더 거부·디코딩 폭주를 채점하면 인프라·모델 문제가 품질 점수로
+    # 둔갑한다. 실제로 130,755자 폭주 응답에 판정자가 만점을 줬다 (SPEC-12 P-14).
+    invalid = unusable_response_reason(response)
     if invalid:
         return response, invalid, latency_ms
 

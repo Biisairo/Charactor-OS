@@ -33,7 +33,7 @@ _VECTORS = {
 }
 
 
-def _embedding(text: str) -> np.ndarray:
+def _embedding(text: str, _kind: str = "passage") -> np.ndarray:
     return _VECTORS["A"] if text.startswith("A:") else _VECTORS["B"]
 
 

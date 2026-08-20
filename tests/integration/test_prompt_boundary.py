@@ -55,7 +55,7 @@ def _is_inside_boundary(prompt: str, needle: str) -> bool:
     return True
 
 
-def _embed(text: str) -> np.ndarray:
+def _embed(text: str, _kind: str = "passage") -> np.ndarray:
     vec = np.zeros(8)
     vec[abs(hash(text)) % 8] = 1.0
     return vec

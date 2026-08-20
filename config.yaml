@@ -38,6 +38,30 @@ prompt:
   tokenizer: "Qwen/Qwen2.5-7B-Instruct"
 
 # ---------------------------------------------------------------------------
+# 임베딩 (SPEC-12)
+#
+# Memory·Knowledge·FewShot 이 공유하는 단일 신호다. 세 모듈이 같은 좌표계를
+# 써야 하므로 모델을 여기 한 곳에서 정한다.
+#
+# 모델을 바꾸면 두 가지가 자동으로 일어난다.
+#   - 지식·예시 임베딩 캐시(state/embeddings.db)가 전량 미스가 된다
+#   - 기억(state/memories.db)의 벡터가 저장된 원문으로 다시 계산된다
+# 좌표계가 다른 벡터를 섞으면 오류 없이 무의미한 점수가 나오기 때문이다.
+#
+# 바꾼 뒤에는 `eval/embedding_probe.py` 를 다시 돌려야 한다. Knowledge 의
+# NO_KEYWORD_GATE(0.85)가 현재 모델의 유사도 분포에 매여 있다 (SPEC-12 4.2).
+#
+# query_prefix·passage_prefix 는 모델이 요구하는 규약이다. e5 계열은 이를
+# 권하지만, 이 자산에서는 붙이지 않은 쪽이 top-1 이 6%p 높았다 (SPEC-12 4.1).
+# 프리픽스를 요구하는 모델로 바꿀 때만 채운다.
+# ---------------------------------------------------------------------------
+embedding:
+  model: "intfloat/multilingual-e5-small"
+  query_prefix: ""
+  passage_prefix: ""
+  normalize: true
+
+# ---------------------------------------------------------------------------
 # LLM 호출 운영 로그
 #
 # 모든 LLM 호출(응답 생성·Reflection·감정·기억)을 JSONL로 누적한다.

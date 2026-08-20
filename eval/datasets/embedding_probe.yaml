@@ -1,0 +1,117 @@
+# 임베딩 모델의 한국어 변별력 측정 데이터셋 (SPEC-12 REQ-21-5·21-6)
+#
+# band 의 뜻:
+#   paraphrase  질의와 자료가 **다른 말**로 같은 것을 가리킨다. 키워드로는 걸리지
+#               않으므로 임베딩이 존재 이유를 증명해야 하는 지점이다
+#   literal     질의어가 자료에 그대로 있다. 키워드도 잡는 대조군
+#   unrelated   자료에 없는 것. **아무것도 걸리지 않는 것이 정답**이다
+#
+# expected 는 heading_path 의 부분 문자열 목록이다. 하나라도 맞으면 적중으로 본다
+# (두 문서가 같은 주제를 나눠 담은 경우가 있다).
+
+cases:
+  # ─── 한소민 · paraphrase ───
+  - character: han-so-min
+    query: "어머니는 요즘 잘 계세요?"
+    expected: ["주변 사람들 > 엄마"]
+    band: paraphrase
+
+  - character: han-so-min
+    query: "한동안 쉬었던 시기가 있었다고 들었어"
+    expected: ["23세 — 한 달 휴방"]
+    band: paraphrase
+
+  - character: han-so-min
+    query: "유명해진 계기가 뭐였어?"
+    expected: ["21세 — 클립이 퍼지다"]
+    band: paraphrase
+
+  - character: han-so-min
+    query: "영상 편집은 누가 해줘?"
+    expected: ["주변 사람들 > 재현"]
+    band: paraphrase
+
+  - character: han-so-min
+    query: "악성 루머 퍼뜨리는 사람들은 어떻게 대처해?"
+    expected: ["저격 채널"]
+    band: paraphrase
+
+  - character: han-so-min
+    query: "어릴 때는 뭐 하고 놀았어?"
+    expected: ["초등학생 시절 — PC방"]
+    band: paraphrase
+
+  - character: han-so-min
+    query: "오래 봐준 사람들한테 고마운 마음 있지?"
+    expected: ["고정 시청자"]
+    band: paraphrase
+
+  - character: han-so-min
+    query: "요즘 시청자 수가 줄어서 고민이야?"
+    expected: ["현재 — 24세, 3년 차", "지표"]
+    band: paraphrase
+
+  # ─── 한소민 · literal ───
+  - character: han-so-min
+    query: "방송 스케줄이 어떻게 돼?"
+    expected: ["스케줄"]
+    band: literal
+
+  - character: han-so-min
+    query: "동접이 무슨 뜻이야?"
+    expected: ["방송 지표"]
+    band: literal
+
+  - character: han-so-min
+    query: "소속사 스튜디오에서 뭐 해?"
+    expected: ["소속사 스튜디오", "소속사"]
+    band: literal
+
+  # ─── 한소민 · unrelated ───
+  - character: han-so-min
+    query: "양자역학 강의 노트를 정리해줘"
+    expected: []
+    band: unrelated
+
+  - character: han-so-min
+    query: "파이썬 리스트 컴프리헨션 문법 알려줘"
+    expected: []
+    band: unrelated
+
+  - character: han-so-min
+    query: "자동차 엔진 오일 교체 주기가 언제야"
+    expected: []
+    band: unrelated
+
+  # ─── 홍길동 · paraphrase ───
+  - character: hong-gil-dong
+    query: "첩의 자식이라 벼슬길이 막혔다는 게 무슨 말이야"
+    expected: ["서얼 차별", "과거와 관직"]
+    band: paraphrase
+
+  - character: hong-gil-dong
+    query: "숨어서 지내는 곳이 있어?"
+    expected: ["변두리 산속 은신처"]
+    band: paraphrase
+
+  - character: hong-gil-dong
+    query: "따르는 무리는 어떻게 모았어?"
+    expected: ["무리가 생기다", "활빈당 사람들"]
+    band: paraphrase
+
+  - character: hong-gil-dong
+    query: "포졸들이 쫓아오지는 않아?"
+    expected: ["관군", "최근 — 추적이 심해지다"]
+    band: paraphrase
+
+  # ─── 홍길동 · literal ───
+  - character: hong-gil-dong
+    query: "한양 저잣거리는 어때?"
+    expected: ["한양 저잣거리"]
+    band: literal
+
+  # ─── 홍길동 · unrelated ───
+  - character: hong-gil-dong
+    query: "주식 투자는 어떻게 시작해?"
+    expected: []
+    band: unrelated

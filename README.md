@@ -400,8 +400,8 @@ uv run python main.py --character characters/my-character
 | 영역 | 선택 | 이유 |
 |---|---|---|
 | LLM | OpenAI API / 로컬 (mlx-lm) | 동일 인터페이스로 교체 가능 |
-| 임베딩 | sentence-transformers (all-MiniLM-L6-v2) | 로컬 실행, 외부 호출 0 |
-| 벡터 검색 | numpy dot product | 기억 규모(수백 건)에 벡터 DB는 과설계 |
+| 임베딩 | sentence-transformers (multilingual-e5-small) | 로컬 실행, 외부 호출 0. 영어 전용 모델은 한국어 변별력이 음수였습니다 ([SPEC-12](spec/12_embedding.md)) |
+| 벡터 검색 | numpy dot product | 기억·지식 규모(수백 건)에 벡터 DB는 과설계. 병목은 검색이 아니라 임베딩 계산이었고, 그쪽을 SQLite 캐시로 해결했습니다 |
 | 영속화 | SQLite (기억) / JSON (감정·대화) | 의존성 없이 단일 파일로 재현 가능 |
 | API | FastAPI (REST) | 대화 경로 단일화 — 검토를 우회하는 통로를 두지 않음 |
 | 프론트엔드 | React 19 + Tailwind 4 + shadcn/ui | — |

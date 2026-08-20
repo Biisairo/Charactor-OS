@@ -25,6 +25,7 @@ MEMORY_DB_FILENAME = "memories.db"
 EMOTION_FILENAME = "emotions.json"
 HISTORY_FILENAME = "history.json"
 WORKING_MEMORY_FILENAME = "working_memory.json"
+EMBEDDING_CACHE_FILENAME = "embeddings.db"
 
 
 @dataclass(frozen=True)
@@ -76,6 +77,15 @@ class CharacterLayout:
     @property
     def working_memory_path(self) -> Path:
         return self.state_dir / WORKING_MEMORY_FILENAME
+
+    @property
+    def embedding_cache_path(self) -> Path:
+        """지식·예시 임베딩 캐시 (SPEC-12 REQ-21-10).
+
+        `state/`에 두는 이유는 언제든 재생성 가능한 파생물이기 때문이다.
+        지워도 다음 로드에서 다시 만들어진다 — 느려질 뿐이다.
+        """
+        return self.state_dir / EMBEDDING_CACHE_FILENAME
 
     def is_character(self) -> bool:
         """캐릭터 디렉토리로 인정할 수 있는가. persona.yaml의 존재로 판단한다."""

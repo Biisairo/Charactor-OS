@@ -7,6 +7,7 @@ from prompt_toolkit.history import FileHistory
 from src.call_log import from_config as call_logger_from_config
 from src.character_os import CharacterOS
 from src.config import load_config
+from src.embedding import from_config as embedder_from_config
 from src.prompts.engine import from_config as prompt_engine_from_config
 from src.trace import format_trace
 
@@ -64,6 +65,7 @@ def main():
         trace=args.trace,
         call_logger=call_logger_from_config(config),
         prompt_engine=prompt_engine_from_config(config),
+        embedder=embedder_from_config(config),
     )
 
     print("캐릭터가 준비되었습니다. 대화를 시작하세요!")
